@@ -39,6 +39,12 @@ const ProgressModal: React.FC<ProgressModalProps> = ({ progress, onReset }) => {
                         </li>
                     ))}
                 </ul>
+                {progress.overallStatus === 'completed' && (
+                    <div className="mt-6 p-4 bg-green-500/20 border border-green-500/50 rounded-lg text-green-200">
+                        <h3 className="font-bold">Conversion finished</h3>
+                        <p className="text-sm mt-1">Preparing your Markdown preview...</p>
+                    </div>
+                )}
                 {progress.overallStatus === 'error' && (
                      <div className="mt-6 p-4 bg-red-500/20 border border-red-500/50 rounded-lg">
                         <h3 className="font-bold text-red-300">An Error Occurred</h3>

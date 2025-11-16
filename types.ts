@@ -32,7 +32,7 @@ export interface ProgressStep {
 export interface ProgressState {
     steps: ProgressStep[];
     currentStep: number;
-    overallStatus: 'idle' | 'running' | 'error';
+    overallStatus: 'idle' | 'running' | 'error' | 'completed';
 }
 
 export interface ConversionResult {
