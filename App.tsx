@@ -6,12 +6,10 @@ import SettingsPanel from './components/SettingsPanel';
 import ProgressModal from './components/ProgressModal';
 import ResultsView from './components/ResultsView';
 import ApiKeyModal from './components/ApiKeyModal';
-import LicenseModal from './components/LicenseModal';
 import Toast from './components/Toast';
 import useLocalStorage from './hooks/useLocalStorage';
 import { processFile } from './services/fileProcessor';
 import { getAvailableModels } from './services/geminiService';
-import { validateLicenseKey } from './services/licensingService';
 import { ConversionSettings, ConversionResult, ProgressState, ViewState, ImageHandling, AvailableModel } from './types';
 
 const defaultSettings: ConversionSettings = {
@@ -37,12 +35,10 @@ const App: React.FC = () => {
     const [result, setResult] = useState<ConversionResult | null>(null);
     const [apiKey, setApiKey] = useLocalStorage<string | null>('gemini-api-key', null);
     const [showApiKeyModal, setShowApiKeyModal] = useState(false);
-    const [showLicenseModal, setShowLicenseModal] = useState(false);
     const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
     const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
     const [modelsLoading, setModelsLoading] = useState(true);
     const [modelsError, setModelsError] = useState<string | null>(null);
-    const [isLicensed, setIsLicensed] = useLocalStorage<boolean>('is-licensed', false);
 
     // Effect to check for API key on mount
     useEffect(() => {
@@ -111,27 +107,25 @@ const App: React.FC = () => {
         setToast({ message: 'API Key saved successfully!', type: 'success' });
     };
 
-    const handleActivateLicense = async (key: string): Promise<boolean> => {
-        const result = await validateLicenseKey(key);
-        if (result.success) {
-            setIsLicensed(true);
-            setShowLicenseModal(false);
-        }
-        setToast({ message: result.message, type: result.success ? 'success' : 'error' });
-        return result.success;
-    };
-
     const handleConvert = useCallback(async () => {
         if (!file || !apiKey) {
             if (!apiKey) setShowApiKeyModal(true);
             return;
         }
 
+        const selectedModel = availableModels.find(model => model.name === settings.model);
+
         setViewState('processing');
         setProgress({ steps: [], currentStep: 0, overallStatus: 'running' });
 
         try {
-            const conversionResult = await processFile(file, settings, setProgress, apiKey, isLicensed);
+            const conversionResult = await processFile(
+                file,
+                settings,
+                setProgress,
+                apiKey,
+                selectedModel?.inputTokenLimit
+            );
             setResult(conversionResult);
             setViewState('results');
         } catch (error) {
@@ -139,7 +133,7 @@ const App: React.FC = () => {
             // The ProgressModal will display the specific error details.
             // No need to set another state here, as the progress state already reflects the error.
         }
-    }, [file, settings, apiKey, isLicensed]);
+    }, [file, settings, apiKey, availableModels]);
 
     const handleReset = () => {
         setFile(null);
@@ -150,22 +144,12 @@ const App: React.FC = () => {
     
     return (
         <div className="min-h-screen flex flex-col antialiased">
-            <Header 
-                onSwitchKey={() => setShowApiKeyModal(true)} 
-                onRemoveHeaderClick={() => setShowLicenseModal(true)}
-                isLicensed={isLicensed}
-            />
+            <Header onSwitchKey={() => setShowApiKeyModal(true)} />
             {showApiKeyModal && (
-                <ApiKeyModal 
+                <ApiKeyModal
                     currentApiKey={apiKey}
                     onSave={handleSaveApiKey}
                     onClose={() => setShowApiKeyModal(false)}
-                />
-            )}
-            {showLicenseModal && (
-                <LicenseModal
-                    onActivate={handleActivateLicense}
-                    onClose={() => setShowLicenseModal(false)}
                 />
             )}
             {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}

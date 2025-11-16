@@ -32,7 +32,7 @@ export interface ProgressStep {
 export interface ProgressState {
     steps: ProgressStep[];
     currentStep: number;
-    overallStatus: 'idle' | 'running' | 'error';
+    overallStatus: 'idle' | 'running' | 'error' | 'completed';
 }
 
 export interface ConversionResult {
@@ -45,4 +45,12 @@ export interface ConversionResult {
 export interface ExtractedImage {
     b64: string;
     format: 'png' | 'jpeg' | 'webp';
+}
+
+export interface GeminiContentPart {
+    text?: string;
+    inlineData?: {
+        mimeType: string;
+        data: string;
+    };
 }
