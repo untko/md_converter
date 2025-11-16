@@ -1,11 +1,14 @@
 import { GeminiContentPart } from '../types';
 
-const DEFAULT_MODEL_TOKEN_LIMIT = 1_000_000;
+const DEFAULT_MODEL_TOKEN_LIMIT = 120_000;
 const SAFETY_MARGIN = 0.9;
 const PROMPT_BUFFER_TOKENS = 2_000;
 const MIN_CHUNK_TOKEN_LIMIT = 8_000;
 const CHAR_PER_TOKEN_ESTIMATE = 4;
 const TEXT_PART_CHAR_LIMIT = 12_000;
+const BASE64_TO_BYTES_RATIO = 3 / 4;
+const DEFAULT_BINARY_BYTE_LIMIT = 3 * 1024 * 1024; // 3MB per request keeps inlineData manageable
+const MIN_BINARY_BYTE_LIMIT = 512 * 1024;
 
 const getChunkTokenLimit = (modelTokenLimit?: number): number => {
     const rawLimit = modelTokenLimit && Number.isFinite(modelTokenLimit)
@@ -15,12 +18,23 @@ const getChunkTokenLimit = (modelTokenLimit?: number): number => {
     return Math.max(adjusted, MIN_CHUNK_TOKEN_LIMIT);
 };
 
+const getBinaryByteLimit = (): number => {
+    return Math.max(DEFAULT_BINARY_BYTE_LIMIT * SAFETY_MARGIN, MIN_BINARY_BYTE_LIMIT);
+};
+
 const estimateTokensForPart = (part: GeminiContentPart): number => {
     if (part.text) {
         return Math.max(1, Math.ceil(part.text.length / CHAR_PER_TOKEN_ESTIMATE));
     }
     if (part.inlineData?.data) {
         return Math.max(1, Math.ceil(part.inlineData.data.length / CHAR_PER_TOKEN_ESTIMATE));
+    }
+    return 0;
+};
+
+const estimateBytesForPart = (part: GeminiContentPart): number => {
+    if (part.inlineData?.data) {
+        return Math.ceil(part.inlineData.data.length * BASE64_TO_BYTES_RATIO);
     }
     return 0;
 };
@@ -63,17 +77,20 @@ export const splitTextIntoParts = (text: string): GeminiContentPart[] => {
 interface ChunkContentResult {
     chunks: GeminiContentPart[][];
     estimatedTokens: number;
-    chunkLimit: number;
+    chunkTokenLimit: number;
+    binaryByteLimit: number;
 }
 
 export const chunkContentParts = (
     parts: GeminiContentPart[],
     modelTokenLimit?: number
 ): ChunkContentResult => {
-    const chunkLimit = getChunkTokenLimit(modelTokenLimit);
+    const chunkTokenLimit = getChunkTokenLimit(modelTokenLimit);
+    const binaryByteLimit = getBinaryByteLimit();
     const chunks: GeminiContentPart[][] = [];
     let currentChunk: GeminiContentPart[] = [];
     let currentTokens = 0;
+    let currentBytes = 0;
     let estimatedTokens = 0;
 
     const flushChunk = () => {
@@ -81,25 +98,31 @@ export const chunkContentParts = (
             chunks.push(currentChunk);
             currentChunk = [];
             currentTokens = 0;
+            currentBytes = 0;
         }
     };
 
     parts.forEach(part => {
         const partTokens = estimateTokensForPart(part);
+        const partBytes = estimateBytesForPart(part);
         estimatedTokens += partTokens;
 
-        if (part.inlineData && partTokens > chunkLimit) {
+        if (part.inlineData && partBytes > binaryByteLimit) {
             throw new Error(
                 'One of the extracted images is too large for the selected model. Try lowering the max image dimension or quality.'
             );
         }
 
-        if (currentTokens + partTokens > chunkLimit && currentChunk.length) {
+        const wouldExceedTokens = currentTokens + partTokens > chunkTokenLimit;
+        const wouldExceedBytes = currentBytes + partBytes > binaryByteLimit;
+
+        if ((wouldExceedTokens || wouldExceedBytes) && currentChunk.length) {
             flushChunk();
         }
 
         currentChunk.push(part);
         currentTokens += partTokens;
+        currentBytes += partBytes;
     });
 
     flushChunk();
@@ -107,6 +130,7 @@ export const chunkContentParts = (
     return {
         chunks: chunks.length ? chunks : (parts.length ? [parts] : []),
         estimatedTokens,
-        chunkLimit,
+        chunkTokenLimit,
+        binaryByteLimit,
     };
 };
