@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
-import { ConversionSettings, AvailableModel } from '../types';
+import { ConversionSettings, AvailableModel, GeminiContentPart } from '../types';
+import { buildGeminiPrompt } from './promptBuilder';
 
 export const getAvailableModels = async (apiKey: string): Promise<AvailableModel[]> => {
     try {
@@ -39,54 +40,22 @@ export const getAvailableModels = async (apiKey: string): Promise<AvailableModel
     }
 };
 
-const buildSystemPrompt = (settings: ConversionSettings, fileType: 'pdf' | 'html'): string => {
-    let prompt = `You are an expert file conversion assistant. Your task is to convert the provided file into a single, clean, and well-structured Markdown document.
-
-Formatting Rules:
-- Headers: The main title must be a ${settings.startHeader.replace('h', '#'.repeat(parseInt(settings.startHeader.slice(1))))} (${settings.startHeader}). All subsequent headers must follow a logical hierarchy. Do not use more than 3 tiers of headers (e.g., ###).
-- LaTeX: All mathematical expressions, equations, and formulas MUST be formatted using LaTeX syntax. Use $inline$ for inline equations and $$display$$ for block-level equations.
-- Content: Preserve all body text, lists, and tables. Convert HTML tables to Markdown tables.
-
-Referencing Rules:
-- Links: Preserve all 'ahref' hyperlinks, converting them to standard Markdown links [link text](url).
-- Citations: ${settings.citationStyle !== 'none' ? `If you identify in-text citations (e.g., [Author, 2023]), format them using ${settings.citationStyle.toUpperCase()} style.` : 'Preserve in-text citations as they appear.'}
-- Bibliography: If a bibliography or "References" section is present, format it as a standard Markdown bulleted list.
-
-Image Handling Rules:
-`;
-
-    if (fileType === 'pdf') {
-        prompt += `- You will be given the entire text content from a PDF document, followed by a series of images.
-- If there are many images, they may be grouped into "contact sheets" which contain multiple, smaller, labeled sub-images (e.g., "image_1", "image_2").
-- Your task is to convert the text content into a single, continuous Markdown stream.
-- When you encounter a place in the text where an image logically belongs, you MUST insert a placeholder based on its ORIGINAL number.
-- The placeholder format is \`[IMAGE_N]\`, where 'N' corresponds to the label on the contact sheet (e.g., for "image_1", use \`[IMAGE_1]\`).
-- Even if images are grouped onto contact sheets, refer to them by their individual number. For example, if you are given a contact sheet with image_1, image_2, and image_3, you must use \`[IMAGE_1]\`, \`[IMAGE_2]\`, etc., in the text.
-- Transcribe the text accurately and place the image placeholders where they belong. Do not describe the images.`;
-    } else { // HTML
-        if (settings.imageHandling === 'preserve-links') {
-            prompt += `- If you find an <img> tag with a src URL, preserve it as a Markdown image link: ![alt text](url).`;
-        } else if (settings.imageHandling === 'describe') {
-            prompt += `- For every <img> tag encountered, generate a detailed description and caption. Format it as: [Image: detailed description]\\n*Caption: [generated caption]*`;
-        } else {
-            prompt += `- Ignore all <img> tags and do not include them in the output.`;
-        }
-    }
-    
-    prompt += `\n\nBegin conversion.`;
-    return prompt;
-};
+interface ChunkContext {
+    index: number;
+    total: number;
+}
 
 export const generateMarkdownStream = async (
-    parts: any[],
+    parts: GeminiContentPart[],
     settings: ConversionSettings,
     fileType: 'pdf' | 'html',
     onStream: (chunk: string) => void,
-    apiKey: string
+    apiKey: string,
+    chunkContext?: ChunkContext
 ): Promise<string> => {
     const ai = new GoogleGenAI({ apiKey });
-    
-    const systemPrompt = buildSystemPrompt(settings, fileType);
+
+    const systemPrompt = buildGeminiPrompt(settings, fileType, chunkContext);
     
     const result = await ai.models.generateContentStream({
         model: settings.model,
