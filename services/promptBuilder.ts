@@ -50,9 +50,15 @@ const buildSharedPrompt = (settings: ConversionSettings): string => {
     ].join('\n');
 };
 
+interface ChunkContext {
+    index: number;
+    total: number;
+}
+
 export const buildGeminiPrompt = (
     settings: ConversionSettings,
     fileType: SupportedFileType,
+    chunkContext?: ChunkContext,
 ): string => {
     const shared = buildSharedPrompt(settings);
 
@@ -61,7 +67,17 @@ export const buildGeminiPrompt = (
             ? pdfInstructions
             : buildHtmlImageRule(settings);
 
-    return `${shared}\n${fileSpecificRule}\n\nBegin conversion.`;
+    const chunkGuidance = chunkContext && chunkContext.total > 1
+        ? `- Chunking: You are processing chunk ${chunkContext.index + 1} of ${chunkContext.total}. Continue exactly where the last chunk left off, avoid repeating prior sections, and keep numbering consistent.`
+        : '';
+
+    return [
+        shared,
+        fileSpecificRule,
+        chunkGuidance,
+        '',
+        'Begin conversion.'
+    ].filter(Boolean).join('\n');
 };
 
 export type { SupportedFileType };

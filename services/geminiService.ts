@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { ConversionSettings, AvailableModel } from '../types';
+import { ConversionSettings, AvailableModel, GeminiContentPart } from '../types';
 import { buildGeminiPrompt } from './promptBuilder';
 
 export const getAvailableModels = async (apiKey: string): Promise<AvailableModel[]> => {
@@ -40,16 +40,22 @@ export const getAvailableModels = async (apiKey: string): Promise<AvailableModel
     }
 };
 
+interface ChunkContext {
+    index: number;
+    total: number;
+}
+
 export const generateMarkdownStream = async (
-    parts: any[],
+    parts: GeminiContentPart[],
     settings: ConversionSettings,
     fileType: 'pdf' | 'html',
     onStream: (chunk: string) => void,
-    apiKey: string
+    apiKey: string,
+    chunkContext?: ChunkContext
 ): Promise<string> => {
     const ai = new GoogleGenAI({ apiKey });
-    
-    const systemPrompt = buildGeminiPrompt(settings, fileType);
+
+    const systemPrompt = buildGeminiPrompt(settings, fileType, chunkContext);
     
     const result = await ai.models.generateContentStream({
         model: settings.model,

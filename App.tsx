@@ -113,11 +113,19 @@ const App: React.FC = () => {
             return;
         }
 
+        const selectedModel = availableModels.find(model => model.name === settings.model);
+
         setViewState('processing');
         setProgress({ steps: [], currentStep: 0, overallStatus: 'running' });
 
         try {
-            const conversionResult = await processFile(file, settings, setProgress, apiKey);
+            const conversionResult = await processFile(
+                file,
+                settings,
+                setProgress,
+                apiKey,
+                selectedModel?.inputTokenLimit
+            );
             setResult(conversionResult);
             setViewState('results');
         } catch (error) {
@@ -125,7 +133,7 @@ const App: React.FC = () => {
             // The ProgressModal will display the specific error details.
             // No need to set another state here, as the progress state already reflects the error.
         }
-    }, [file, settings, apiKey]);
+    }, [file, settings, apiKey, availableModels]);
 
     const handleReset = () => {
         setFile(null);

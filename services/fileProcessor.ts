@@ -1,9 +1,10 @@
 
 import type { Dispatch, SetStateAction } from 'react';
-import { ConversionSettings, ProgressState, ConversionResult, ProgressStep, ExtractedImage } from '../types';
+import { ConversionSettings, ProgressState, ConversionResult, ProgressStep, ExtractedImage, GeminiContentPart } from '../types';
 import { generateMarkdownStream } from './geminiService';
 import { extractAndProcessImagesFromPage } from './imageProcessor';
 import { groupImages } from './imageGrouper';
+import { chunkContentParts, splitTextIntoParts } from './contentChunker';
 
 declare var JSZip: any;
 declare var pdfjsLib: any;
@@ -48,15 +49,16 @@ export const processFile = async (
     file: File,
     settings: ConversionSettings,
     setProgress: Dispatch<SetStateAction<ProgressState>>,
-    apiKey: string
+    apiKey: string,
+    modelTokenLimit?: number
 ): Promise<ConversionResult> => {
 
     const isPdf = file.type === 'application/pdf';
 
     if (isPdf) {
-        return processPdf(file, settings, setProgress, apiKey);
+        return processPdf(file, settings, setProgress, apiKey, modelTokenLimit);
     } else if (file.type === 'text/html') {
-        return processHtml(file, settings, setProgress, apiKey);
+        return processHtml(file, settings, setProgress, apiKey, modelTokenLimit);
     } else {
         throw new Error(`Unsupported file type: ${file.type}`);
     }
@@ -66,7 +68,8 @@ const processPdf = async (
     file: File,
     settings: ConversionSettings,
     setProgress: Dispatch<SetStateAction<ProgressState>>,
-    apiKey: string
+    apiKey: string,
+    modelTokenLimit?: number
 ): Promise<ConversionResult> => {
     const steps: ProgressStep[] = [
         { name: `Reading file: ${file.name}`, status: 'pending' },
@@ -126,16 +129,39 @@ const processPdf = async (
 
     // Step 3: Generate Markdown
     const generatingStepIndex = 3;
-    updateStep(generatingStepIndex, 'in-progress', 'Sending all content to Gemini...');
+    updateStep(generatingStepIndex, 'in-progress', 'Preparing content for Gemini...');
     let fullMarkdown = "";
-    
-    try {
-        const parts: any[] = [{ text: allText }];
-        apiImages.forEach(img => { parts.push({ inlineData: { mimeType: `image/${img.format}`, data: img.b64 } }); });
 
-        fullMarkdown = await generateMarkdownStream(parts, settings, 'pdf', () => {
-            updateStep(generatingStepIndex, 'in-progress', 'Receiving Markdown stream...');
-        }, apiKey);
+    try {
+        const textParts = splitTextIntoParts(allText);
+        const parts: GeminiContentPart[] = [
+            ...textParts,
+            ...apiImages.map(img => ({ inlineData: { mimeType: `image/${img.format}`, data: img.b64 } }))
+        ];
+
+        const { chunks } = chunkContentParts(parts, modelTokenLimit);
+
+        if (!chunks.length) {
+            throw new Error('No content was extracted from the PDF.');
+        }
+
+        for (let i = 0; i < chunks.length; i++) {
+            const chunkParts = chunks[i];
+            const chunkContext = chunks.length > 1 ? { index: i, total: chunks.length } : undefined;
+            const sendingMessage = chunks.length > 1
+                ? `Sending chunk ${i + 1}/${chunks.length} to Gemini...`
+                : 'Sending all content to Gemini...';
+            updateStep(generatingStepIndex, 'in-progress', sendingMessage);
+
+            const chunkMarkdown = await generateMarkdownStream(chunkParts, settings, 'pdf', () => {
+                const receivingMessage = chunks.length > 1
+                    ? `Receiving chunk ${i + 1}/${chunks.length}...`
+                    : 'Receiving Markdown stream...';
+                updateStep(generatingStepIndex, 'in-progress', receivingMessage);
+            }, apiKey, chunkContext);
+
+            fullMarkdown += (fullMarkdown ? '\n\n' : '') + chunkMarkdown.trim();
+        }
 
         updateStep(generatingStepIndex, 'completed');
     } catch (error) {
@@ -191,7 +217,8 @@ const processHtml = async (
     file: File,
     settings: ConversionSettings,
     setProgress: Dispatch<SetStateAction<ProgressState>>,
-    apiKey: string
+    apiKey: string,
+    modelTokenLimit?: number
 ): Promise<ConversionResult> => {
      const steps: ProgressStep[] = [
         { name: `Reading file: ${file.name}`, status: 'pending' },
@@ -216,9 +243,30 @@ const processHtml = async (
     updateStep(1, 'in-progress');
     let markdown = "";
     try {
-        markdown = await generateMarkdownStream([{ text: htmlText }], settings, 'html', () => {
-            updateStep(1, 'in-progress', `Streaming text...`);
-        }, apiKey);
+        const textParts = splitTextIntoParts(htmlText);
+        const { chunks } = chunkContentParts(textParts, modelTokenLimit);
+
+        if (!chunks.length) {
+            throw new Error('No HTML content was provided.');
+        }
+
+        for (let i = 0; i < chunks.length; i++) {
+            const chunkContext = chunks.length > 1 ? { index: i, total: chunks.length } : undefined;
+            const sendingMessage = chunks.length > 1
+                ? `Sending chunk ${i + 1}/${chunks.length}...`
+                : 'Sending text to Gemini...';
+            updateStep(1, 'in-progress', sendingMessage);
+
+            const chunkMarkdown = await generateMarkdownStream(chunks[i], settings, 'html', () => {
+                const receivingMessage = chunks.length > 1
+                    ? `Receiving chunk ${i + 1}/${chunks.length}...`
+                    : `Streaming text...`;
+                updateStep(1, 'in-progress', receivingMessage);
+            }, apiKey, chunkContext);
+
+            markdown += (markdown ? '\n\n' : '') + chunkMarkdown.trim();
+        }
+
         updateStep(1, 'completed');
     } catch (error) {
          const errorMessage = getFriendlyErrorMessage(error);

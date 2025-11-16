@@ -7,6 +7,7 @@ MD Converter is a single-page React + Vite application that runs entirely in the
 - **Client-side PDF + HTML ingestion** – `App.tsx` lets you drop a file and chooses the right conversion pipeline based on its MIME type. PDFs get parsed with `pdf.js`, while HTML is streamed to Gemini as-is.
 - **Live Gemini model discovery** – `getAvailableModels` calls `https://generativelanguage.googleapis.com/v1beta/models` with your API key so the "AI Model" dropdown only shows text-capable models exposed by the current key.
 - **PDF image extraction + contact sheets** – `imageProcessor.ts` walks the PDF operator list to rebuild every embedded image, filters/resizes them with the advanced settings, and `imageGrouper.ts` optionally builds 2×2 contact sheets when there are 5+ images so a single Gemini request still has the right visual context.
+- **Adaptive chunking for long documents** – `contentChunker.ts` splits very long text streams and groups inline images into the fewest possible Gemini API calls while staying within each model’s input-token limit. Each chunk inherits the same system prompt, so the final Markdown stitches together seamlessly.
 - **Progressive UX** – `ProgressModal`, `SettingsPanel`, `Dropzone`, and `ResultsView` work together to show upload state, conversion progress, and a markdown editor + preview with copy/download buttons. The processor now marks jobs as "completed" so the modal reaches a success state before handing off to the results screen.
 - **Optional support widget** – the Ko-fi floating chat launcher in `index.html` offers an unobtrusive way for users to leave a tip without blocking downloads or editing.
 - **Reset-friendly dropzone** – the drag-and-drop card now exposes an explicit "Clear File" action and clears the hidden `<input>` whenever you replace a file, so re-uploading the same PDF/HTML works without a refresh.
@@ -17,11 +18,11 @@ MD Converter is a single-page React + Vite application that runs entirely in the
 ### PDFs
 1. **Read & parse** – `processPdf` loads the file into `pdf.js`, iterates every page, and accumulates text runs plus `ExtractedImage` objects.
 2. **Image grouping** – once all images are collected, `groupImages` may build contact sheets so the Gemini request stays compact.
-3. **Gemini call** – the PDF text plus each (grouped) image is streamed to `generateMarkdownStream`, which applies a PDF-specific system prompt to insert `[IMAGE_N]` placeholders where needed.
+3. **Gemini call** – the PDF text plus each (grouped) image is split into token-aware chunks before streaming through `generateMarkdownStream`. The chunk-aware system prompt keeps numbering and structure consistent even if multiple API calls are required.
 4. **Assembly** – placeholders are replaced either with base64 data URIs (standalone `.md`) or relative `./assets/...` paths (for the `.zip`).
 
 ### HTML
-1. **Read** – the file is loaded as UTF-8 text and passed to `generateMarkdownStream` with the HTML-specific portion of the system prompt (image preservation/description rules respect the UI setting).
+1. **Read** – the file is loaded as UTF-8 text, split into manageable parts, and chunked if necessary before `generateMarkdownStream` applies the HTML-specific system prompt (image preservation/description rules respect the UI setting).
 2. **Assemble** – the returned markdown is displayed in the editor/preview split-view, ready for copy or download.
 
 ## Architecture
@@ -34,7 +35,8 @@ md_converter/
 ├── services/
 │   ├── fileProcessor.ts     # Chooses PDF vs HTML pipeline and orchestrates Gemini calls
 │   ├── geminiService.ts     # Wraps @google/genai streaming + model discovery
-│   ├── promptBuilder.ts     # Builds the system prompt Gemini uses for Markdown conversion
+│   ├── contentChunker.ts    # Splits long text + image payloads into model-sized chunks
+│   ├── promptBuilder.ts     # Builds the system prompt Gemini uses for Markdown conversion (chunk-aware)
 │   ├── imageProcessor.ts    # Pulls embedded PDF images via pdf.js
 │   ├── imageGrouper.ts      # Builds contact sheets for many images
 ├── assets/              # Static imagery for the landing UI
@@ -77,7 +79,9 @@ md_converter/
 
 Fine-tune how Gemini restructures documents by editing `services/promptBuilder.ts`. The helper centralizes the shared rules (headers, citations, math handling) and exposes separate code paths for PDFs and HTML sources. Updating the prompt builder immediately affects every conversion request without touching the streaming service code.
 
-## Tips & troubleshooting
+## Handling model limits & troubleshooting
+- **Automatic chunking** – When the estimated token count of the extracted text + inline images would exceed the selected model’s input limit, `contentChunker.ts` splits the payload into as few API calls as possible (usually only one). Progress updates call out which chunk is streaming, and the prompt builder tells Gemini to continue where the previous chunk stopped.
+- **Oversized images** – Each inline image counts toward the token estimate. If a single grouped image is still too large for the model, the processor surfaces an explicit error so you can reduce the max dimension/quality in the Advanced Image Settings before retrying.
 - **Missing models?** Ensure the API key has access to Gemini text-capable models. Errors from `getAvailableModels` bubble up to the Settings panel for quick debugging.
 - **PDF images look off?** Tweak the advanced image settings (format, quality, min/max dimensions) or disable grouping by keeping the total count below 5 images.
 

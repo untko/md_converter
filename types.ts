@@ -46,3 +46,11 @@ export interface ExtractedImage {
     b64: string;
     format: 'png' | 'jpeg' | 'webp';
 }
+
+export interface GeminiContentPart {
+    text?: string;
+    inlineData?: {
+        mimeType: string;
+        data: string;
+    };
+}
