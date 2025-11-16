@@ -79,6 +79,7 @@ interface ChunkContentResult {
     estimatedTokens: number;
     chunkTokenLimit: number;
     binaryByteLimit: number;
+    chunkTokenEstimates: number[];
 }
 
 export const chunkContentParts = (
@@ -88,6 +89,7 @@ export const chunkContentParts = (
     const chunkTokenLimit = getChunkTokenLimit(modelTokenLimit);
     const binaryByteLimit = getBinaryByteLimit();
     const chunks: GeminiContentPart[][] = [];
+    const chunkTokenEstimates: number[] = [];
     let currentChunk: GeminiContentPart[] = [];
     let currentTokens = 0;
     let currentBytes = 0;
@@ -96,6 +98,7 @@ export const chunkContentParts = (
     const flushChunk = () => {
         if (currentChunk.length) {
             chunks.push(currentChunk);
+            chunkTokenEstimates.push(currentTokens);
             currentChunk = [];
             currentTokens = 0;
             currentBytes = 0;
@@ -132,5 +135,6 @@ export const chunkContentParts = (
         estimatedTokens,
         chunkTokenLimit,
         binaryByteLimit,
+        chunkTokenEstimates: chunkTokenEstimates.length ? chunkTokenEstimates : (parts.length ? [estimatedTokens] : []),
     };
 };

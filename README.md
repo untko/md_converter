@@ -7,7 +7,8 @@ MD Converter is a single-page React + Vite application that runs entirely in the
 - **Client-side PDF + HTML ingestion** – `App.tsx` lets you drop a file and chooses the right conversion pipeline based on its MIME type. PDFs get parsed with `pdf.js`, while HTML is streamed to Gemini as-is.
 - **Live Gemini model discovery** – `getAvailableModels` calls `https://generativelanguage.googleapis.com/v1beta/models` with your API key so the "AI Model" dropdown only shows text-capable models exposed by the current key.
 - **PDF image extraction + contact sheets** – `imageProcessor.ts` walks the PDF operator list to rebuild every embedded image, filters/resizes them with the advanced settings, and `imageGrouper.ts` optionally builds 2×2 contact sheets when there are 5+ images so a single Gemini request still has the right visual context.
-- **Adaptive chunking for long documents** – `contentChunker.ts` splits very long text streams and groups inline images into the fewest possible Gemini API calls while staying within each model’s input-token limit. A secondary byte budget keeps the base64 inline images under ~3 MB per request, so PDFs full of screenshots no longer exceed Gemini’s payload cap.
+- **Adaptive chunking for long documents** – `contentChunker.ts` splits very long text streams and groups inline images into the fewest possible Gemini API calls while staying within each model’s input-token limit. A secondary byte budget keeps the base64 inline images under ~3 MB per request, so PDFs full of screenshots no longer exceed Gemini’s payload cap. The progress modal now surfaces an estimated token count for each chunk so you can see how much budget every Gemini call consumes.
+- **Rate-limit aware streaming** – `generateMarkdownStream` listens for Gemini’s `RetryInfo` payloads when you hit the per-minute quota, automatically waits the requested number of seconds (up to three retries), and echoes the delay inside the progress modal so large jobs resume without manual intervention.
 - **Progressive UX** – `ProgressModal`, `SettingsPanel`, `Dropzone`, and `ResultsView` work together to show upload state, conversion progress, and a markdown editor + preview with copy/download buttons. The processor now marks jobs as "completed" so the modal reaches a success state before handing off to the results screen.
 - **Optional support widget** – the Ko-fi floating chat launcher in `index.html` offers an unobtrusive way for users to leave a tip without blocking downloads or editing.
 - **Reset-friendly dropzone** – the drag-and-drop card now exposes an explicit "Clear File" action and clears the hidden `<input>` whenever you replace a file, so re-uploading the same PDF/HTML works without a refresh.
@@ -80,10 +81,40 @@ md_converter/
 Fine-tune how Gemini restructures documents by editing `services/promptBuilder.ts`. The helper centralizes the shared rules (headers, citations, math handling) and exposes separate code paths for PDFs and HTML sources. Updating the prompt builder immediately affects every conversion request without touching the streaming service code.
 
 ## Handling model limits & troubleshooting
-- **Automatic chunking** – When the estimated token count of the extracted text + inline images would exceed the selected model’s input limit, `contentChunker.ts` splits the payload into as few API calls as possible (usually only one). If a model never reports its limit, the helper falls back to a conservative ceiling so the request is still pre-split before hitting Gemini’s hard cap. Progress updates call out which chunk is streaming, and the prompt builder tells Gemini to continue where the previous chunk stopped.
+- **Automatic chunking** – When the estimated token count of the extracted text + inline images would exceed the selected model’s input limit, `contentChunker.ts` splits the payload into as few API calls as possible (usually only one). If a model never reports its limit, the helper falls back to a conservative ceiling so the request is still pre-split before hitting Gemini’s hard cap. The progress modal now displays the approximate token usage for each chunk (plus the total estimate) so you can see how much quota every call consumes.
+- **Quota retries** – Gemini returns `RESOURCE_EXHAUSTED` (HTTP 429) when you exhaust your per-minute token budget. Instead of failing immediately, the streaming helper reads the `RetryInfo.retryDelay` field (or the “Please retry in Ns” hint), updates the progress modal with the pause duration, waits automatically, and retries the chunk up to three times before surfacing an error.
 - **Oversized images** – Each inline image is budgeted twice: by a token estimate and by an approximate byte size. If a single grouped image is still too large for the model, the processor surfaces an explicit error so you can reduce the max dimension/quality in the Advanced Image Settings before retrying.
 - **Missing models?** Ensure the API key has access to Gemini text-capable models. Errors from `getAvailableModels` bubble up to the Settings panel for quick debugging.
 - **PDF images look off?** Tweak the advanced image settings (format, quality, min/max dimensions) or disable grouping by keeping the total count below 5 images.
+
+
+### Inspecting model token limits
+
+Google’s Python SDK exposes the exact `input_token_limit` and `output_token_limit` for every model tied to your key. Run the snippet below (replace the API key with your own) to confirm the ceilings that the UI enforces while chunking:
+
+```python
+import google.generativeai as genai
+
+genai.configure(api_key="<YOUR_KEY>")
+
+print("--- Available Models and Input Limits ---")
+for model in genai.list_models():
+    if 'generateContent' in model.supported_generation_methods:
+        print(f"Model: {model.display_name}")
+        print(f"  Name: {model.name}")
+        print(f"  Input Limit: {model.input_token_limit:,} tokens")
+        print(f"  Output Limit: {model.output_token_limit:,} tokens")
+        print("-" * 20)
+
+print("\n--- Details for a Specific Model ---")
+model_name = 'models/gemini-1.5-pro-latest'
+model_info = genai.get_model(model_name)
+print(f"Model: {model_info.display_name}")
+print(f"  Input Limit: {model_info.input_token_limit:,} tokens")
+print(f"  Output Limit: {model_info.output_token_limit:,} tokens")
+```
+
+Comparing those numbers with the progress modal’s token estimates tells you how close a conversion came to the quota and whether you should switch models or pause between jobs.
 
 
 With this context, you can confidently evolve the repo without relying on the aspirational structure that was described in the previous README.

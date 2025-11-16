@@ -139,18 +139,40 @@ const processPdf = async (
             ...apiImages.map(img => ({ inlineData: { mimeType: `image/${img.format}`, data: img.b64 } }))
         ];
 
-        const { chunks } = chunkContentParts(parts, modelTokenLimit);
+        const { chunks, estimatedTokens, chunkTokenLimit, chunkTokenEstimates } = chunkContentParts(parts, modelTokenLimit);
 
         if (!chunks.length) {
             throw new Error('No content was extracted from the PDF.');
         }
 
+        const chunkCountLabel = chunks.length === 1 ? 'Prepared 1 chunk' : `Prepared ${chunks.length} chunks`;
+        const tokenSummaryLabel = `~${estimatedTokens.toLocaleString()} estimated tokens total (limit ${chunkTokenLimit.toLocaleString()} per chunk).`;
+        const chunkEstimatesPreview = chunkTokenEstimates
+            .slice(0, 4)
+            .map((tokens, index) => `Chunk ${index + 1}: ~${tokens.toLocaleString()} tokens`)
+            .join(' | ');
+        const chunkEstimateSuffix = chunkTokenEstimates.length > 4
+            ? ` | +${chunkTokenEstimates.length - 4} more chunk(s)`
+            : '';
+        const chunkSummaryMessage = [chunkCountLabel, tokenSummaryLabel, chunkEstimatesPreview + chunkEstimateSuffix]
+            .filter(Boolean)
+            .join(' ');
+        updateStep(generatingStepIndex, 'in-progress', chunkSummaryMessage.trim());
+
+        const handleStatusUpdate = (message: string) => {
+            updateStep(generatingStepIndex, 'in-progress', message);
+        };
+
         for (let i = 0; i < chunks.length; i++) {
             const chunkParts = chunks[i];
             const chunkContext = chunks.length > 1 ? { index: i, total: chunks.length } : undefined;
-            const sendingMessage = chunks.length > 1
-                ? `Sending chunk ${i + 1}/${chunks.length} to Gemini...`
-                : 'Sending all content to Gemini...';
+            const estimatedChunkTokens = chunkTokenEstimates[i];
+            const sendingMessageBase = chunks.length > 1
+                ? `Sending chunk ${i + 1}/${chunks.length} to Gemini`
+                : 'Sending all content to Gemini';
+            const sendingMessage = estimatedChunkTokens
+                ? `${sendingMessageBase} (~${estimatedChunkTokens.toLocaleString()} tokens)...`
+                : `${sendingMessageBase}...`;
             updateStep(generatingStepIndex, 'in-progress', sendingMessage);
 
             const chunkMarkdown = await generateMarkdownStream(chunkParts, settings, 'pdf', () => {
@@ -158,7 +180,7 @@ const processPdf = async (
                     ? `Receiving chunk ${i + 1}/${chunks.length}...`
                     : 'Receiving Markdown stream...';
                 updateStep(generatingStepIndex, 'in-progress', receivingMessage);
-            }, apiKey, chunkContext);
+            }, apiKey, chunkContext, handleStatusUpdate);
 
             fullMarkdown += (fullMarkdown ? '\n\n' : '') + chunkMarkdown.trim();
         }
@@ -244,17 +266,39 @@ const processHtml = async (
     let markdown = "";
     try {
         const textParts = splitTextIntoParts(htmlText);
-        const { chunks } = chunkContentParts(textParts, modelTokenLimit);
+        const { chunks, estimatedTokens, chunkTokenLimit, chunkTokenEstimates } = chunkContentParts(textParts, modelTokenLimit);
 
         if (!chunks.length) {
             throw new Error('No HTML content was provided.');
         }
 
+        const chunkCountLabel = chunks.length === 1 ? 'Prepared 1 chunk' : `Prepared ${chunks.length} chunks`;
+        const tokenSummaryLabel = `~${estimatedTokens.toLocaleString()} estimated tokens total (limit ${chunkTokenLimit.toLocaleString()} per chunk).`;
+        const chunkEstimatesPreview = chunkTokenEstimates
+            .slice(0, 4)
+            .map((tokens, index) => `Chunk ${index + 1}: ~${tokens.toLocaleString()} tokens`)
+            .join(' | ');
+        const chunkEstimateSuffix = chunkTokenEstimates.length > 4
+            ? ` | +${chunkTokenEstimates.length - 4} more chunk(s)`
+            : '';
+        const chunkSummaryMessage = [chunkCountLabel, tokenSummaryLabel, chunkEstimatesPreview + chunkEstimateSuffix]
+            .filter(Boolean)
+            .join(' ');
+        updateStep(1, 'in-progress', chunkSummaryMessage.trim());
+
+        const handleStatusUpdate = (message: string) => {
+            updateStep(1, 'in-progress', message);
+        };
+
         for (let i = 0; i < chunks.length; i++) {
             const chunkContext = chunks.length > 1 ? { index: i, total: chunks.length } : undefined;
-            const sendingMessage = chunks.length > 1
-                ? `Sending chunk ${i + 1}/${chunks.length}...`
-                : 'Sending text to Gemini...';
+            const estimatedChunkTokens = chunkTokenEstimates[i];
+            const sendingMessageBase = chunks.length > 1
+                ? `Sending chunk ${i + 1}/${chunks.length}`
+                : 'Sending text to Gemini';
+            const sendingMessage = estimatedChunkTokens
+                ? `${sendingMessageBase} (~${estimatedChunkTokens.toLocaleString()} tokens)...`
+                : `${sendingMessageBase}...`;
             updateStep(1, 'in-progress', sendingMessage);
 
             const chunkMarkdown = await generateMarkdownStream(chunks[i], settings, 'html', () => {
@@ -262,7 +306,7 @@ const processHtml = async (
                     ? `Receiving chunk ${i + 1}/${chunks.length}...`
                     : `Streaming text...`;
                 updateStep(1, 'in-progress', receivingMessage);
-            }, apiKey, chunkContext);
+            }, apiKey, chunkContext, handleStatusUpdate);
 
             markdown += (markdown ? '\n\n' : '') + chunkMarkdown.trim();
         }
