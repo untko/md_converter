@@ -23,6 +23,13 @@ const Dropzone: React.FC<DropzoneProps> = ({ file, setFile }) => {
     const [isDragging, setIsDragging] = useState(false);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+    const resetFileSelection = useCallback(() => {
+        setFile(null);
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+    }, [setFile]);
+
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
             setFile(e.target.files[0]);
@@ -49,9 +56,12 @@ const Dropzone: React.FC<DropzoneProps> = ({ file, setFile }) => {
     }, [setFile]);
 
     const handleDropzoneClick = () => {
-        if (!file) {
-            fileInputRef.current?.click();
+        if (file) {
+            resetFileSelection();
+        } else if (fileInputRef.current) {
+            fileInputRef.current.value = '';
         }
+        fileInputRef.current?.click();
     };
 
     return (
@@ -69,12 +79,12 @@ const Dropzone: React.FC<DropzoneProps> = ({ file, setFile }) => {
                 tabIndex={0}
                 onClick={handleDropzoneClick}
                 onKeyDown={(e) => {
-                    if (!file && (e.key === 'Enter' || e.key === ' ')) {
+                    if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
                         handleDropzoneClick();
                     }
                 }}
-                className={`relative w-full h-full min-h-[350px] flex flex-col justify-center items-center p-6 border-2 border-dashed rounded-2xl transition-all duration-300 ${isDragging ? 'border-purple-500 bg-white/5' : 'border-gray-600 hover:border-gray-500'} ${file ? 'cursor-default' : 'cursor-pointer'}`}
+                className={`relative w-full h-full min-h-[350px] flex flex-col justify-center items-center p-6 border-2 border-dashed rounded-2xl transition-all duration-300 ${isDragging ? 'border-purple-500 bg-white/5' : 'border-gray-600 hover:border-gray-500'} cursor-pointer`}
                 onDragEnter={handleDrag}
                 onDragLeave={handleDrag}
                 onDragOver={handleDrag}
@@ -99,7 +109,7 @@ const Dropzone: React.FC<DropzoneProps> = ({ file, setFile }) => {
                             type="button"
                             onClick={(e) => {
                                 e.preventDefault();
-                                setFile(null);
+                                resetFileSelection();
                             }}
                             className="mt-4 text-sm bg-red-500/20 hover:bg-red-500/40 text-red-300 font-semibold py-2 px-4 rounded-lg transition"
                         >

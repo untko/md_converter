@@ -178,7 +178,8 @@ const processPdf = async (
     const zipBlob = await zip.generateAsync({ type: "blob" });
     
     updateStep(assemblingStepIndex, 'completed');
-    return { 
+    setProgress(prev => ({ ...prev, overallStatus: 'completed' }));
+    return {
         markdownForPreview: standaloneMdContent,
         standaloneMdContent: standaloneMdContent,
         zipBlob: zipBlob,
@@ -230,6 +231,7 @@ const processHtml = async (
     updateStep(2, 'in-progress');
     const finalMarkdown = markdown;
     updateStep(2, 'completed');
+    setProgress(prev => ({ ...prev, overallStatus: 'completed' }));
 
     return {
         markdownForPreview: finalMarkdown,

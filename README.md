@@ -7,9 +7,10 @@ MD Converter is a single-page React + Vite application that runs entirely in the
 - **Client-side PDF + HTML ingestion** – `App.tsx` lets you drop a file and chooses the right conversion pipeline based on its MIME type. PDFs get parsed with `pdf.js`, while HTML is streamed to Gemini as-is.
 - **Live Gemini model discovery** – `getAvailableModels` calls `https://generativelanguage.googleapis.com/v1beta/models` with your API key so the "AI Model" dropdown only shows text-capable models exposed by the current key.
 - **PDF image extraction + contact sheets** – `imageProcessor.ts` walks the PDF operator list to rebuild every embedded image, filters/resizes them with the advanced settings, and `imageGrouper.ts` optionally builds 2×2 contact sheets when there are 5+ images so a single Gemini request still has the right visual context.
-- **Progressive UX** – `ProgressModal`, `SettingsPanel`, `Dropzone`, and `ResultsView` work together to show upload state, conversion progress, and a markdown editor + preview with copy/download buttons.
+- **Progressive UX** – `ProgressModal`, `SettingsPanel`, `Dropzone`, and `ResultsView` work together to show upload state, conversion progress, and a markdown editor + preview with copy/download buttons. The processor now marks jobs as "completed" so the modal reaches a success state before handing off to the results screen.
 - **Optional support widget** – the Ko-fi floating chat launcher in `index.html` offers an unobtrusive way for users to leave a tip without blocking downloads or editing.
-- **Reset-friendly dropzone** – the drag-and-drop card now exposes an explicit "Clear File" action so you can swap PDFs/HTML files without refreshing the page.
+- **Reset-friendly dropzone** – the drag-and-drop card now exposes an explicit "Clear File" action and clears the hidden `<input>` whenever you replace a file, so re-uploading the same PDF/HTML works without a refresh.
+- **Corrected image-handling toggles** – PDFs always embed images inline (so the "preserve links" radio stays disabled), while HTML files can freely switch between ignoring images, asking Gemini for descriptions, or keeping the original links intact.
 
 ## Conversion workflow
 

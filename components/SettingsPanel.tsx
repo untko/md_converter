@@ -120,7 +120,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, setSettings, on
                     <div className="flex space-x-4">
                         {['ignore', 'describe', 'preserve-links'].map((opt) => {
                             const option = opt as ImageHandling;
-                            const disabled = isPdf || (option === 'preserve-links' && !isPdf);
+                            const disabled = isPdf && option === 'preserve-links';
                             return (
                                <label key={option} className={`flex items-center space-x-2 ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
                                     <input
@@ -133,9 +133,13 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, setSettings, on
                             )
                         })}
                     </div>
-                     {isPdf && (
+                    {isPdf ? (
                         <p className="text-xs text-gray-400 mt-2">
-                            For PDFs, embedded images are automatically extracted and placed inline.
+                            PDFs always embed images inline after extraction, so preserving links is unavailable.
+                        </p>
+                    ) : (
+                        <p className="text-xs text-gray-400 mt-2">
+                            HTML files can ignore images, ask Gemini to describe them, or preserve the original links in Markdown.
                         </p>
                     )}
                 </div>
