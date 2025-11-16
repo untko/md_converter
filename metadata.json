@@ -1,0 +1,5 @@
+{
+  "name": "MD Converter",
+  "description": "A powerful PWA to convert PDF and HTML files into well-structured Markdown notes using the Gemini API, with advanced options for formatting, image handling, and citation.",
+  "requestFramePermissions": []
+}
