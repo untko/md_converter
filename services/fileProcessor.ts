@@ -44,25 +44,19 @@ const getFriendlyErrorMessage = (error: unknown): string => {
     return error.message;
 };
 
-const getLicenseHeader = (): string => {
-    return `[![Buy Me A Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=&slug=your-username&button_colour=FFDD00&font_colour=000000&font_family=Poppins&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/your-username)\n\n---\n\n`;
-};
-
-
 export const processFile = async (
     file: File,
     settings: ConversionSettings,
     setProgress: Dispatch<SetStateAction<ProgressState>>,
-    apiKey: string,
-    isLicensed: boolean
+    apiKey: string
 ): Promise<ConversionResult> => {
-    
+
     const isPdf = file.type === 'application/pdf';
 
     if (isPdf) {
-        return processPdf(file, settings, setProgress, apiKey, isLicensed);
+        return processPdf(file, settings, setProgress, apiKey);
     } else if (file.type === 'text/html') {
-        return processHtml(file, settings, setProgress, apiKey, isLicensed);
+        return processHtml(file, settings, setProgress, apiKey);
     } else {
         throw new Error(`Unsupported file type: ${file.type}`);
     }
@@ -72,8 +66,7 @@ const processPdf = async (
     file: File,
     settings: ConversionSettings,
     setProgress: Dispatch<SetStateAction<ProgressState>>,
-    apiKey: string,
-    isLicensed: boolean
+    apiKey: string
 ): Promise<ConversionResult> => {
     const steps: ProgressStep[] = [
         { name: `Reading file: ${file.name}`, status: 'pending' },
@@ -156,10 +149,8 @@ const processPdf = async (
     const assemblingStepIndex = 4;
     updateStep(assemblingStepIndex, 'in-progress');
 
-    const header = isLicensed ? '' : getLicenseHeader();
-
     // Version 1: Standalone Markdown with embedded images
-    const standaloneMdContent = header + fullMarkdown.replace(/\[IMAGE_(\d+)\]/g, (_, nStr) => {
+    const standaloneMdContent = fullMarkdown.replace(/\[IMAGE_(\d+)\]/g, (_, nStr) => {
         const index = parseInt(nStr, 10) - 1;
         if (index >= 0 && index < allExtractedImages.length) {
             const img = allExtractedImages[index];
@@ -173,7 +164,7 @@ const processPdf = async (
     const assets = zip.folder("assets");
     if (!assets) throw new Error("Could not create zip folder.");
     
-    const markdownForZip = header + fullMarkdown.replace(/\[IMAGE_(\d+)\]/g, (_, nStr) => {
+    const markdownForZip = fullMarkdown.replace(/\[IMAGE_(\d+)\]/g, (_, nStr) => {
         const index = parseInt(nStr, 10) - 1;
         if (index >= 0 && index < allExtractedImages.length) {
             const img = allExtractedImages[index];
@@ -199,8 +190,7 @@ const processHtml = async (
     file: File,
     settings: ConversionSettings,
     setProgress: Dispatch<SetStateAction<ProgressState>>,
-    apiKey: string,
-    isLicensed: boolean
+    apiKey: string
 ): Promise<ConversionResult> => {
      const steps: ProgressStep[] = [
         { name: `Reading file: ${file.name}`, status: 'pending' },
@@ -238,8 +228,7 @@ const processHtml = async (
     
     // Step 2: Assembling
     updateStep(2, 'in-progress');
-    const header = isLicensed ? '' : getLicenseHeader();
-    const finalMarkdown = header + markdown;
+    const finalMarkdown = markdown;
     updateStep(2, 'completed');
 
     return {
