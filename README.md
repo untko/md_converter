@@ -9,6 +9,7 @@ MD Converter is a single-page React + Vite application that runs entirely in the
 - **PDF image extraction + contact sheets** – `imageProcessor.ts` walks the PDF operator list to rebuild every embedded image, filters/resizes them with the advanced settings, and `imageGrouper.ts` optionally builds 2×2 contact sheets when there are 5+ images so a single Gemini request still has the right visual context.
 - **Progressive UX** – `ProgressModal`, `SettingsPanel`, `Dropzone`, and `ResultsView` work together to show upload state, conversion progress, and a markdown editor + preview with copy/download buttons.
 - **Optional support widget** – the Ko-fi floating chat launcher in `index.html` offers an unobtrusive way for users to leave a tip without blocking downloads or editing.
+- **Reset-friendly dropzone** – the drag-and-drop card now exposes an explicit "Clear File" action so you can swap PDFs/HTML files without refreshing the page.
 
 ## Conversion workflow
 
@@ -32,6 +33,7 @@ md_converter/
 ├── services/
 │   ├── fileProcessor.ts     # Chooses PDF vs HTML pipeline and orchestrates Gemini calls
 │   ├── geminiService.ts     # Wraps @google/genai streaming + model discovery
+│   ├── promptBuilder.ts     # Builds the system prompt Gemini uses for Markdown conversion
 │   ├── imageProcessor.ts    # Pulls embedded PDF images via pdf.js
 │   ├── imageGrouper.ts      # Builds contact sheets for many images
 ├── assets/              # Static imagery for the landing UI
@@ -69,6 +71,10 @@ md_converter/
 ### Scripts & tooling
 - `npm run lint` / `pnpm lint` – type-check the project via `tsc --noEmit`.
 - `npm test` / `pnpm test` – currently runs the same type-check pass. Extend this script with Vitest once you add runtime tests.
+
+## Prompt customization
+
+Fine-tune how Gemini restructures documents by editing `services/promptBuilder.ts`. The helper centralizes the shared rules (headers, citations, math handling) and exposes separate code paths for PDFs and HTML sources. Updating the prompt builder immediately affects every conversion request without touching the streaming service code.
 
 ## Tips & troubleshooting
 - **Missing models?** Ensure the API key has access to Gemini text-capable models. Errors from `getAvailableModels` bubble up to the Settings panel for quick debugging.

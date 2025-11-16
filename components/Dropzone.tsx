@@ -1,5 +1,5 @@
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 
 const FileIcon = () => (
     <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 mx-auto text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -21,6 +21,7 @@ interface DropzoneProps {
 
 const Dropzone: React.FC<DropzoneProps> = ({ file, setFile }) => {
     const [isDragging, setIsDragging] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
@@ -47,26 +48,40 @@ const Dropzone: React.FC<DropzoneProps> = ({ file, setFile }) => {
         }
     }, [setFile]);
 
+    const handleDropzoneClick = () => {
+        if (!file) {
+            fileInputRef.current?.click();
+        }
+    };
+
     return (
         <div className="h-full">
-            <label 
-                htmlFor="file-upload"
-                className={`relative w-full h-full min-h-[350px] flex flex-col justify-center items-center p-6 border-2 border-dashed rounded-2xl transition-all duration-300 ${isDragging ? 'border-purple-500 bg-white/5' : 'border-gray-600 hover:border-gray-500'} ${file ? '' : 'cursor-pointer'}`}
+            <input
+                ref={fileInputRef}
+                type="file"
+                id="file-upload"
+                className="hidden"
+                onChange={handleFileChange}
+                accept=".pdf,.html"
+            />
+            <div
+                role="button"
+                tabIndex={0}
+                onClick={handleDropzoneClick}
+                onKeyDown={(e) => {
+                    if (!file && (e.key === 'Enter' || e.key === ' ')) {
+                        e.preventDefault();
+                        handleDropzoneClick();
+                    }
+                }}
+                className={`relative w-full h-full min-h-[350px] flex flex-col justify-center items-center p-6 border-2 border-dashed rounded-2xl transition-all duration-300 ${isDragging ? 'border-purple-500 bg-white/5' : 'border-gray-600 hover:border-gray-500'} ${file ? 'cursor-default' : 'cursor-pointer'}`}
                 onDragEnter={handleDrag}
                 onDragLeave={handleDrag}
                 onDragOver={handleDrag}
                 onDrop={handleDrop}
             >
-                <input
-                    type="file"
-                    id="file-upload"
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                    onChange={handleFileChange}
-                    accept=".pdf,.html"
-                    disabled={!!file}
-                />
                 {!file ? (
-                    <div className="text-center pointer-events-none">
+                    <div className="text-center">
                         <UploadIcon />
                         <p className="mt-4 text-lg font-semibold">Drag & Drop file here</p>
                         <p className="text-sm text-gray-400">or</p>
@@ -76,22 +91,23 @@ const Dropzone: React.FC<DropzoneProps> = ({ file, setFile }) => {
                         <p className="text-xs text-gray-500 mt-4">Supported formats: PDF, HTML</p>
                     </div>
                 ) : (
-                    <div className="text-center pointer-events-none">
+                    <div className="text-center">
                         <FileIcon />
                         <p className="mt-3 text-lg font-semibold break-all">{file.name}</p>
                         <p className="text-sm text-gray-400">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
-                        <button 
+                        <button
+                            type="button"
                             onClick={(e) => {
                                 e.preventDefault();
                                 setFile(null);
-                            }} 
-                            className="mt-4 text-sm bg-red-500/20 hover:bg-red-500/40 text-red-300 font-semibold py-2 px-4 rounded-lg transition pointer-events-auto cursor-pointer"
+                            }}
+                            className="mt-4 text-sm bg-red-500/20 hover:bg-red-500/40 text-red-300 font-semibold py-2 px-4 rounded-lg transition"
                         >
                             Clear File
                         </button>
                     </div>
                 )}
-            </label>
+            </div>
         </div>
     );
 };
