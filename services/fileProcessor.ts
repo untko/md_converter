@@ -1,7 +1,7 @@
 
 import type { Dispatch, SetStateAction } from 'react';
 import { ConversionSettings, ProgressState, ConversionResult, ProgressStep, ExtractedImage, GeminiContentPart } from '../types';
-import { generateMarkdownStream } from './geminiService';
+import { generateMarkdownStream, countTokensForParts } from './geminiService';
 import { extractAndProcessImagesFromPage } from './imageProcessor';
 import { groupImages } from './imageGrouper';
 import { chunkContentParts, splitTextIntoParts } from './contentChunker';
@@ -43,6 +43,62 @@ const getFriendlyErrorMessage = (error: unknown): string => {
     }
     
     return error.message;
+};
+
+interface SafeChunkResult {
+    chunks: GeminiContentPart[][];
+    tokenCounts: number[];
+    totalTokens: number;
+}
+
+const ensureChunksWithinTokenLimit = async (
+    initialChunks: GeminiContentPart[][],
+    settings: ConversionSettings,
+    fileType: 'pdf' | 'html',
+    apiKey: string,
+    chunkTokenLimit: number
+): Promise<SafeChunkResult> => {
+    const safeChunks: GeminiContentPart[][] = [];
+    const tokenCounts: number[] = [];
+
+    const splitChunkRecursively = async (parts: GeminiContentPart[]): Promise<void> => {
+        if (!parts.length) {
+            return;
+        }
+
+        const tokenCount = await countTokensForParts(parts, settings, fileType, apiKey);
+
+        if (tokenCount <= chunkTokenLimit) {
+            safeChunks.push(parts);
+            tokenCounts.push(tokenCount);
+            return;
+        }
+
+        if (parts.length === 1) {
+            const [singlePart] = parts;
+            if (singlePart?.text) {
+                const smallerParts = splitTextIntoParts(singlePart.text);
+                if (!smallerParts.length) {
+                    throw new Error('Unable to split an oversized text block to meet the model token limit.');
+                }
+                await splitChunkRecursively(smallerParts);
+                return;
+            }
+
+            throw new Error('A single image or binary block exceeds the model token limit. Reduce the max image size or switch to alt-text mode.');
+        }
+
+        const midpoint = Math.ceil(parts.length / 2);
+        await splitChunkRecursively(parts.slice(0, midpoint));
+        await splitChunkRecursively(parts.slice(midpoint));
+    };
+
+    for (const chunkParts of initialChunks) {
+        await splitChunkRecursively(chunkParts);
+    }
+
+    const totalTokens = tokenCounts.reduce((sum, value) => sum + value, 0);
+    return { chunks: safeChunks, tokenCounts, totalTokens };
 };
 
 export const processFile = async (
@@ -154,20 +210,32 @@ const processPdf = async (
             ]
             : textParts;
 
-        const { chunks, estimatedTokens, chunkTokenLimit, chunkTokenEstimates } = chunkContentParts(parts, modelTokenLimit);
+        const { chunks: estimatedChunks, chunkTokenLimit } = chunkContentParts(parts, modelTokenLimit);
 
-        if (!chunks.length) {
+        if (!estimatedChunks.length) {
             throw new Error('No content was extracted from the PDF.');
         }
 
-        const chunkCountLabel = chunks.length === 1 ? 'Prepared 1 chunk' : `Prepared ${chunks.length} chunks`;
-        const tokenSummaryLabel = `~${estimatedTokens.toLocaleString()} estimated tokens total (limit ${chunkTokenLimit.toLocaleString()} per chunk).`;
-        const chunkEstimatesPreview = chunkTokenEstimates
+        updateStep(generatingStepIndex, 'in-progress', 'Requesting exact token counts from Gemini...');
+
+        const { chunks, tokenCounts, totalTokens } = await ensureChunksWithinTokenLimit(
+            estimatedChunks,
+            settings,
+            'pdf',
+            apiKey,
+            chunkTokenLimit
+        );
+
+        const chunkCountLabel = chunks.length === 1
+            ? 'Prepared 1 chunk after verification.'
+            : `Prepared ${chunks.length} chunks after verification.`;
+        const tokenSummaryLabel = `Gemini counted ${totalTokens.toLocaleString()} tokens total (limit ${chunkTokenLimit.toLocaleString()} per chunk).`;
+        const chunkEstimatesPreview = tokenCounts
             .slice(0, 4)
-            .map((tokens, index) => `Chunk ${index + 1}: ~${tokens.toLocaleString()} tokens`)
+            .map((tokens, index) => `Chunk ${index + 1}: ${tokens.toLocaleString()} tokens`)
             .join(' | ');
-        const chunkEstimateSuffix = chunkTokenEstimates.length > 4
-            ? ` | +${chunkTokenEstimates.length - 4} more chunk(s)`
+        const chunkEstimateSuffix = tokenCounts.length > 4
+            ? ` | +${tokenCounts.length - 4} more chunk(s)`
             : '';
         const chunkSummaryMessage = [chunkCountLabel, tokenSummaryLabel, chunkEstimatesPreview + chunkEstimateSuffix]
             .filter(Boolean)
@@ -181,12 +249,12 @@ const processPdf = async (
         for (let i = 0; i < chunks.length; i++) {
             const chunkParts = chunks[i];
             const chunkContext = chunks.length > 1 ? { index: i, total: chunks.length } : undefined;
-            const estimatedChunkTokens = chunkTokenEstimates[i];
+            const verifiedChunkTokens = tokenCounts[i];
             const sendingMessageBase = chunks.length > 1
                 ? `Sending chunk ${i + 1}/${chunks.length} to Gemini`
                 : 'Sending all content to Gemini';
-            const sendingMessage = estimatedChunkTokens
-                ? `${sendingMessageBase} (~${estimatedChunkTokens.toLocaleString()} tokens)...`
+            const sendingMessage = verifiedChunkTokens
+                ? `${sendingMessageBase} (${verifiedChunkTokens.toLocaleString()} tokens)...`
                 : `${sendingMessageBase}...`;
             updateStep(generatingStepIndex, 'in-progress', sendingMessage);
 
@@ -303,20 +371,32 @@ const processHtml = async (
     let markdown = "";
     try {
         const textParts = splitTextIntoParts(htmlText);
-        const { chunks, estimatedTokens, chunkTokenLimit, chunkTokenEstimates } = chunkContentParts(textParts, modelTokenLimit);
+        const { chunks: estimatedChunks, chunkTokenLimit } = chunkContentParts(textParts, modelTokenLimit);
 
-        if (!chunks.length) {
+        if (!estimatedChunks.length) {
             throw new Error('No HTML content was provided.');
         }
 
-        const chunkCountLabel = chunks.length === 1 ? 'Prepared 1 chunk' : `Prepared ${chunks.length} chunks`;
-        const tokenSummaryLabel = `~${estimatedTokens.toLocaleString()} estimated tokens total (limit ${chunkTokenLimit.toLocaleString()} per chunk).`;
-        const chunkEstimatesPreview = chunkTokenEstimates
+        updateStep(1, 'in-progress', 'Requesting exact token counts from Gemini...');
+
+        const { chunks, tokenCounts, totalTokens } = await ensureChunksWithinTokenLimit(
+            estimatedChunks,
+            settings,
+            'html',
+            apiKey,
+            chunkTokenLimit
+        );
+
+        const chunkCountLabel = chunks.length === 1
+            ? 'Prepared 1 chunk after verification.'
+            : `Prepared ${chunks.length} chunks after verification.`;
+        const tokenSummaryLabel = `Gemini counted ${totalTokens.toLocaleString()} tokens total (limit ${chunkTokenLimit.toLocaleString()} per chunk).`;
+        const chunkEstimatesPreview = tokenCounts
             .slice(0, 4)
-            .map((tokens, index) => `Chunk ${index + 1}: ~${tokens.toLocaleString()} tokens`)
+            .map((tokens, index) => `Chunk ${index + 1}: ${tokens.toLocaleString()} tokens`)
             .join(' | ');
-        const chunkEstimateSuffix = chunkTokenEstimates.length > 4
-            ? ` | +${chunkTokenEstimates.length - 4} more chunk(s)`
+        const chunkEstimateSuffix = tokenCounts.length > 4
+            ? ` | +${tokenCounts.length - 4} more chunk(s)`
             : '';
         const chunkSummaryMessage = [chunkCountLabel, tokenSummaryLabel, chunkEstimatesPreview + chunkEstimateSuffix]
             .filter(Boolean)
@@ -329,12 +409,12 @@ const processHtml = async (
 
         for (let i = 0; i < chunks.length; i++) {
             const chunkContext = chunks.length > 1 ? { index: i, total: chunks.length } : undefined;
-            const estimatedChunkTokens = chunkTokenEstimates[i];
+            const verifiedChunkTokens = tokenCounts[i];
             const sendingMessageBase = chunks.length > 1
                 ? `Sending chunk ${i + 1}/${chunks.length}`
                 : 'Sending text to Gemini';
-            const sendingMessage = estimatedChunkTokens
-                ? `${sendingMessageBase} (~${estimatedChunkTokens.toLocaleString()} tokens)...`
+            const sendingMessage = verifiedChunkTokens
+                ? `${sendingMessageBase} (${verifiedChunkTokens.toLocaleString()} tokens)...`
                 : `${sendingMessageBase}...`;
             updateStep(1, 'in-progress', sendingMessage);
 

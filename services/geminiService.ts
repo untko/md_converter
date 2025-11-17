@@ -183,6 +183,30 @@ export const generateMarkdownStream = async (
     }
 };
 
+export const countTokensForParts = async (
+    parts: GeminiContentPart[],
+    settings: ConversionSettings,
+    fileType: 'pdf' | 'html',
+    apiKey: string,
+    chunkContext?: ChunkContext
+): Promise<number> => {
+    const ai = new GoogleGenAI({ apiKey });
+    const systemPrompt = buildGeminiPrompt(settings, fileType, chunkContext);
+    const response = await ai.models.countTokens({
+        model: settings.model,
+        contents: { parts },
+        config: {
+            systemInstruction: systemPrompt,
+        },
+    });
+
+    if (typeof response.totalTokens === 'number' && Number.isFinite(response.totalTokens)) {
+        return response.totalTokens;
+    }
+
+    throw new Error('Gemini did not return a token count. Please try again in a moment.');
+};
+
 export const generateImageDescription = async (
     base64Image: string,
     apiKey: string,

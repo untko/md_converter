@@ -8,7 +8,8 @@ MD Converter is a single-page React + Vite application that runs entirely in the
 - **Live Gemini model discovery** – `getAvailableModels` calls `https://generativelanguage.googleapis.com/v1beta/models` with your API key so the "AI Model" dropdown only shows text-capable models exposed by the current key.
 - **PDF image extraction + contact sheets** – `imageProcessor.ts` walks the PDF operator list to rebuild every embedded image, filters/resizes them with the advanced settings, and `imageGrouper.ts` optionally builds 2×2 contact sheets when there are 5+ images so a single Gemini request still has the right visual context.
 - **Text-only PDF fallback** – The Settings panel exposes a "Text-only (Gemini alt text)" toggle that skips uploading images to Gemini. `processPdf` injects `[IMAGE_N]` markers into the text stream, Gemini fills in descriptive alt text, and the client still embeds the extracted binaries when you copy/download the Markdown.
-- **Adaptive chunking for long documents** – `contentChunker.ts` splits very long text streams and groups inline images into the fewest possible Gemini API calls while staying within each model’s input-token limit. A secondary byte budget keeps the base64 inline images under ~3 MB per request, so PDFs full of screenshots no longer exceed Gemini’s payload cap. The progress modal now surfaces an estimated token count for each chunk so you can see how much budget every Gemini call consumes.
+- **Adaptive chunking for long documents** – `contentChunker.ts` splits very long text streams and groups inline images into the fewest possible Gemini API calls while staying within each model’s input-token limit. A secondary byte budget keeps the base64 inline images under ~3 MB per request, so PDFs full of screenshots no longer exceed Gemini’s payload cap.
+- **Exact token accounting** – before streaming, `fileProcessor.ts` calls Gemini’s `countTokens` endpoint for each chunk. If the measured payload still exceeds the model’s limit, the chunk is split again automatically until it fits, and the progress modal shows the exact token count for every Gemini call.
 - **Rate-limit aware streaming** – `generateMarkdownStream` listens for Gemini’s `RetryInfo` payloads when you hit the per-minute quota, automatically waits the requested number of seconds (up to three retries), and echoes the delay inside the progress modal so large jobs resume without manual intervention.
 - **Progressive UX** – `ProgressModal`, `SettingsPanel`, `Dropzone`, and `ResultsView` work together to show upload state, conversion progress, and a markdown editor + preview with copy/download buttons. The processor now marks jobs as "completed" so the modal reaches a success state before handing off to the results screen.
 - **Optional support widget** – the Ko-fi floating chat launcher in `index.html` offers an unobtrusive way for users to leave a tip without blocking downloads or editing.
@@ -82,7 +83,7 @@ md_converter/
 Fine-tune how Gemini restructures documents by editing `services/promptBuilder.ts`. The helper centralizes the shared rules (headers, citations, math handling) and exposes separate code paths for PDFs and HTML sources. Updating the prompt builder immediately affects every conversion request without touching the streaming service code.
 
 ## Handling model limits & troubleshooting
-- **Automatic chunking** – When the estimated token count of the extracted text + inline images would exceed the selected model’s input limit, `contentChunker.ts` splits the payload into as few API calls as possible (usually only one). If a model never reports its limit, the helper falls back to a conservative ceiling so the request is still pre-split before hitting Gemini’s hard cap. The progress modal now displays the approximate token usage for each chunk (plus the total estimate) so you can see how much quota every call consumes.
+- **Automatic chunking** – When the estimated token count of the extracted text + inline images would exceed the selected model’s input limit, `contentChunker.ts` splits the payload into as few API calls as possible (usually only one). After that first pass, the processor calls Gemini’s `countTokens` API for every chunk and will recursively split any payload that still exceeds the true budget. If a model never reports its limit, the helper falls back to a conservative ceiling so the request is still pre-split before hitting Gemini’s hard cap. The progress modal now displays the exact token usage for each chunk (plus the verified total) so you can see how much quota every call consumes.
 - **Quota retries** – Gemini returns `RESOURCE_EXHAUSTED` (HTTP 429) when you exhaust your per-minute token budget. Instead of failing immediately, the streaming helper reads the `RetryInfo.retryDelay` field (or the “Please retry in Ns” hint), updates the progress modal with the pause duration, waits automatically, and retries the chunk up to three times before surfacing an error.
 - **Oversized images** – Each inline image is budgeted twice: by a token estimate and by an approximate byte size. If a single grouped image is still too large for the model, the processor surfaces an explicit error so you can reduce the max dimension/quality in the Advanced Image Settings before retrying.
 - **Need to stay under quota?** – Switch the PDF Image Strategy to "Text-only (Gemini alt text)" so the conversion only sends text to Gemini. You still get embedded images in the downloaded Markdown, but the request avoids the heavy inline base64 payload and relies on the generated alt text instead.
@@ -116,7 +117,30 @@ print(f"  Input Limit: {model_info.input_token_limit:,} tokens")
 print(f"  Output Limit: {model_info.output_token_limit:,} tokens")
 ```
 
-Comparing those numbers with the progress modal’s token estimates tells you how close a conversion came to the quota and whether you should switch models or pause between jobs.
+Comparing those numbers with the progress modal’s token readouts tells you how close a conversion came to the quota and whether you should switch models or pause between jobs.
+
+### Counting tokens for a sample prompt
+
+The same SDK exposes a `count_tokens` helper so you can predict how a standalone prompt will be billed before sending it. This mirrors the verification step the app now performs for every chunk:
+
+```python
+import google.generativeai as genai
+
+genai.configure(api_key="<YOUR_KEY>")
+model = genai.GenerativeModel("gemini-1.5-flash")
+
+prompt = "Explain quantum physics to a 5 year old."
+
+response = model.count_tokens(prompt)
+print(f"Total Tokens: {response.total_tokens}")
+
+if response.total_tokens > 1_000:
+    print("Prompt is too long! Truncating...")
+else:
+    print("Sending request...")
+```
+
+Inside the browser, `fileProcessor.ts` follows the same pattern: it gathers the PDF/HTML content, asks Gemini for the exact token count, and only streams the chunk once it knows the payload fits within the model’s limit.
 
 
 With this context, you can confidently evolve the repo without relying on the aspirational structure that was described in the previous README.
