@@ -71,10 +71,11 @@ const processPdf = async (
     apiKey: string,
     modelTokenLimit?: number
 ): Promise<ConversionResult> => {
+    const sendImagesToGemini = settings.pdfImageMode !== 'alt-text';
     const steps: ProgressStep[] = [
         { name: `Reading file: ${file.name}`, status: 'pending' },
         { name: 'Extracting all text & images', status: 'pending' },
-        { name: 'Grouping images for processing', status: 'pending' },
+        { name: sendImagesToGemini ? 'Grouping images for processing' : 'Skipping Gemini image upload', status: 'pending' },
         { name: 'Generating Markdown from content', status: 'pending' },
         { name: 'Assembling final files', status: 'pending' },
     ];
@@ -108,10 +109,20 @@ const processPdf = async (
             updateStep(1, 'in-progress', `Processing page ${i}/${numPages}...`);
             const page = await pdf.getPage(i);
             const textContent = await page.getTextContent();
-            allText += textContent.items.map((item: any) => item.str).join(' ') + '\n\n';
-            
+            let pageText = textContent.items.map((item: any) => item.str).join(' ') + '\n\n';
+
             const pageImages = await extractAndProcessImagesFromPage(page, settings);
+            const startIndex = allExtractedImages.length;
             allExtractedImages.push(...pageImages);
+
+            if (!sendImagesToGemini && pageImages.length) {
+                const placeholderLines = pageImages
+                    .map((_, idx) => `[IMAGE_${startIndex + idx + 1}]`)
+                    .join('\n');
+                pageText += `${placeholderLines}\n\n`;
+            }
+
+            allText += pageText;
             page.cleanup();
         }
         updateStep(1, 'completed', `Extracted text and ${allExtractedImages.length} images from ${numPages} pages.`);
@@ -124,8 +135,10 @@ const processPdf = async (
     
     // Step 2: Group images
     updateStep(2, 'in-progress');
-    const apiImages = await groupImages(allExtractedImages);
-    updateStep(2, 'completed', `Processed ${apiImages.length} final images for API.`);
+    const apiImages = sendImagesToGemini ? await groupImages(allExtractedImages) : [];
+    updateStep(2, 'completed', sendImagesToGemini
+        ? `Processed ${apiImages.length} final images for API.`
+        : 'Skipped image upload so Gemini only receives PDF text.');
 
     // Step 3: Generate Markdown
     const generatingStepIndex = 3;
@@ -134,10 +147,12 @@ const processPdf = async (
 
     try {
         const textParts = splitTextIntoParts(allText);
-        const parts: GeminiContentPart[] = [
-            ...textParts,
-            ...apiImages.map(img => ({ inlineData: { mimeType: `image/${img.format}`, data: img.b64 } }))
-        ];
+        const parts: GeminiContentPart[] = sendImagesToGemini
+            ? [
+                ...textParts,
+                ...apiImages.map(img => ({ inlineData: { mimeType: `image/${img.format}`, data: img.b64 } }))
+            ]
+            : textParts;
 
         const { chunks, estimatedTokens, chunkTokenLimit, chunkTokenEstimates } = chunkContentParts(parts, modelTokenLimit);
 
@@ -197,30 +212,52 @@ const processPdf = async (
     const assemblingStepIndex = 4;
     updateStep(assemblingStepIndex, 'in-progress');
 
+    const replaceImageTokens = (
+        markdown: string,
+        createTag: (image: ExtractedImage, index: number, altText?: string) => string,
+    ): string => {
+        const replaceWithAlt = (match: string, alt: string, nStr: string) => {
+            const index = parseInt(nStr, 10) - 1;
+            if (index >= 0 && index < allExtractedImages.length) {
+                const altText = alt?.trim() || `Extracted Image ${index + 1}`;
+                return createTag(allExtractedImages[index], index, altText);
+            }
+            return match;
+        };
+
+        const replaceWithoutAlt = (match: string, nStr: string) => {
+            const index = parseInt(nStr, 10) - 1;
+            if (index >= 0 && index < allExtractedImages.length) {
+                return createTag(allExtractedImages[index], index);
+            }
+            return match;
+        };
+
+        return markdown
+            .replace(/!\[([^\]]*?)\]\[IMAGE_(\d+)\]/g, replaceWithAlt)
+            .replace(/\[IMAGE_(\d+)\]/g, replaceWithoutAlt);
+    };
+
     // Version 1: Standalone Markdown with embedded images
-    const standaloneMdContent = fullMarkdown.replace(/\[IMAGE_(\d+)\]/g, (_, nStr) => {
-        const index = parseInt(nStr, 10) - 1;
-        if (index >= 0 && index < allExtractedImages.length) {
-            const img = allExtractedImages[index];
-            return `![Extracted Image ${index + 1}](data:image/${img.format};base64,${img.b64})`;
-        }
-        return `[IMAGE_${nStr}]`;
+    const standaloneMdContent = replaceImageTokens(fullMarkdown, (img, index, altText) => {
+        const safeAlt = altText || `Extracted Image ${index + 1}`;
+        return `![${safeAlt}](data:image/${img.format};base64,${img.b64})`;
     });
 
     // Version 2: Create zip archive
     const zip = new JSZip();
     const assets = zip.folder("assets");
     if (!assets) throw new Error("Could not create zip folder.");
-    
-    const markdownForZip = fullMarkdown.replace(/\[IMAGE_(\d+)\]/g, (_, nStr) => {
-        const index = parseInt(nStr, 10) - 1;
-        if (index >= 0 && index < allExtractedImages.length) {
-            const img = allExtractedImages[index];
-            const imageName = `${baseFileName}_image_${index + 1}.${img.format}`;
+    const addedToZip = new Set<number>();
+
+    const markdownForZip = replaceImageTokens(fullMarkdown, (img, index, altText) => {
+        const imageName = `${baseFileName}_image_${index + 1}.${img.format}`;
+        if (!addedToZip.has(index)) {
             assets.file(imageName, img.b64, { base64: true });
-            return `![Extracted Image ${index + 1}](./assets/${encodeURIComponent(imageName)})`;
+            addedToZip.add(index);
         }
-        return `[IMAGE_${nStr}]`;
+        const safeAlt = altText || `Extracted Image ${index + 1}`;
+        return `![${safeAlt}](./assets/${encodeURIComponent(imageName)})`;
     });
     zip.file(`${baseFileName}.md`, markdownForZip);
     const zipBlob = await zip.generateAsync({ type: "blob" });

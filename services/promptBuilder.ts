@@ -34,10 +34,22 @@ const buildHtmlImageRule = (settings: ConversionSettings): string => {
     }
 };
 
-const pdfInstructions = `- You will receive raw PDF text followed by zero or more inline images.
+const buildPdfInstructions = (settings: ConversionSettings): string => {
+    if (settings.pdfImageMode === 'alt-text') {
+        return [
+            '- You will receive raw PDF text only. Images are not supplied to this request.',
+            '- The text contains placeholders such as `[IMAGE_12]` that mark where each extracted figure belongs.',
+            '- Replace every placeholder with Markdown image syntax that references the same token, for example `![concise alt text][IMAGE_12]`. Keep numbering identical.',
+            '- Infer helpful alt text from the surrounding context. If the document provides no clues, describe the likely content ("Chart", "Diagram", etc.) and mention that it is inferred.',
+            '- Do not emit bare `[IMAGE_N]` tokens—always wrap them with Markdown image syntax plus alt text.'
+        ].join('\n');
+    }
+
+    return `- You will receive raw PDF text followed by zero or more inline images.
 - Some images may arrive inside "contact sheets" that contain multiple labelled sub-images such as image_1, image_2, etc.
 - Insert image placeholders at the correct location in the Markdown body using the format \`[IMAGE_N]\` where N is the original number on the sheet.
 - Never describe or summarize the images—only place the placeholder.`;
+};
 
 const buildSharedPrompt = (settings: ConversionSettings): string => {
     return [
@@ -64,7 +76,7 @@ export const buildGeminiPrompt = (
 
     const fileSpecificRule =
         fileType === 'pdf'
-            ? pdfInstructions
+            ? buildPdfInstructions(settings)
             : buildHtmlImageRule(settings);
 
     const chunkGuidance = chunkContext && chunkContext.total > 1

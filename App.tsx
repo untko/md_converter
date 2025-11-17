@@ -15,6 +15,7 @@ import { ConversionSettings, ConversionResult, ProgressState, ViewState, ImageHa
 const defaultSettings: ConversionSettings = {
     model: 'gemini-2.5-flash',
     imageHandling: 'ignore',
+    pdfImageMode: 'inline',
     citationStyle: 'none',
     startHeader: 'h2',
     imageFormat: 'webp',
@@ -76,6 +77,13 @@ const App: React.FC = () => {
             setModelsLoading(false);
         }
     }, [apiKey, setSettings]);
+
+    // Backfill any missing fields when loading from older localStorage entries
+    useEffect(() => {
+        if (!settings.pdfImageMode) {
+            setSettings(prev => ({ ...prev, pdfImageMode: 'inline' }));
+        }
+    }, [settings.pdfImageMode, setSettings]);
 
 
     // Effect to automatically adjust settings based on file type.

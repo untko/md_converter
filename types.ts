@@ -6,6 +6,7 @@ export interface AvailableModel {
 }
 
 export type ImageHandling = 'ignore' | 'describe' | 'preserve-links';
+export type PdfImageMode = 'inline' | 'alt-text';
 export type CitationStyle = 'none' | 'chicago' | 'apa' | 'mla';
 export type StartHeader = 'h1' | 'h2' | 'h3';
 export type ViewState = 'main' | 'processing' | 'results';
@@ -14,6 +15,7 @@ export type StepStatus = 'in-progress' | 'completed' | 'error' | 'pending';
 export interface ConversionSettings {
     model: string;
     imageHandling: ImageHandling;
+    pdfImageMode: PdfImageMode;
     citationStyle: CitationStyle;
     startHeader: StartHeader;
     // Advanced image settings
