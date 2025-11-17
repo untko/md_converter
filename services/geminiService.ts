@@ -147,16 +147,20 @@ export const generateMarkdownStream = async (
     const ai = new GoogleGenAI({ apiKey });
 
     const systemPrompt = buildGeminiPrompt(settings, fileType, chunkContext);
+    const contents = [{
+        role: 'user',
+        parts: [
+            { text: systemPrompt },
+            ...parts,
+        ],
+    }];
 
     let attempt = 0;
     while (true) {
         try {
             const result = await ai.models.generateContentStream({
                 model: settings.model,
-                contents: { parts: parts },
-                config: {
-                    systemInstruction: systemPrompt
-                }
+                contents,
             });
 
             let fullText = "";
@@ -192,12 +196,16 @@ export const countTokensForParts = async (
 ): Promise<number> => {
     const ai = new GoogleGenAI({ apiKey });
     const systemPrompt = buildGeminiPrompt(settings, fileType, chunkContext);
+    const contents = [{
+        role: 'user',
+        parts: [
+            { text: systemPrompt },
+            ...parts,
+        ],
+    }];
     const response = await ai.models.countTokens({
         model: settings.model,
-        contents: { parts },
-        config: {
-            systemInstruction: systemPrompt,
-        },
+        contents,
     });
 
     if (typeof response.totalTokens === 'number' && Number.isFinite(response.totalTokens)) {
