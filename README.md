@@ -1,195 +1,146 @@
-
 # MD Converter
 
-A powerful, client-side web application to convert PDF and HTML files into well-structured Markdown notes using the Google Gemini API (more AI options coming soon). This tool is designed for students, researchers, and writers who need to quickly transform documents into an easily editable and portable markdown format.
+MD Converter is a single-page React + Vite application that runs entirely in the browser to turn PDF or HTML files into well-structured Markdown. It extracts inline images, calls the Gemini API for markdown reconstruction, and lets you review, edit, and download the output without uploading the source documents to a server.
 
-## Key Features
+## Highlights
 
--   **Intelligent Conversion**: Leverages the Gemini API for high-quality, context-aware conversion of complex document structures.
--   **PDF & HTML Support**: Handles both PDF documents and HTML files.
--   **Advanced PDF Image Handling**:
-    -   Automatically extracts embedded images directly from PDFs.
-    -   Filters images by size to ignore small icons or artifacts.
-    -   Resizes large images to a configurable maximum dimension.
-    -   Re-encodes images to modern formats like WebP for smaller file sizes.
--   **Flexible Output Options**:
-    -   **Copy to Clipboard**: Copy the complete Markdown with base64-embedded images.
-    -   **Download `.md`**: Save a standalone Markdown file, also with embedded images.
-    -   **Download `.zip`**: Get a clean, portable project with a Markdown file and a separate `assets` folder for all images.
--   **Customizable Formatting**:
-    -   Choose the starting header level (H1, H2, H3) to fit the note-taking structure.
-    -   Select a citation style (APA, MLA, Chicago) for automated formatting of references.
-    -   Fine-tune image quality, format, and dimensions.
--   **Live Preview & Editor**: Edit the generated Markdown in a side-by-side view with a real-time rendered preview.
--   **Secure & Private**: All file processing and API calls happen directly in the browser. the files and API key are never sent to a third-party server. The API key is stored securely in the browser's local storage.
--   **Responsive Design**: A clean, modern, and fully responsive UI that works on any device.
+- **Client-side PDF + HTML ingestion** – `App.tsx` lets you drop a file and chooses the right conversion pipeline based on its MIME type. PDFs get parsed with `pdf.js`, while HTML is streamed to Gemini as-is.
+- **Live Gemini model discovery** – `getAvailableModels` calls `https://generativelanguage.googleapis.com/v1beta/models` with your API key so the "AI Model" dropdown only shows text-capable models exposed by the current key.
+- **PDF image extraction + contact sheets** – `imageProcessor.ts` walks the PDF operator list to rebuild every embedded image, filters/resizes them with the advanced settings, and `imageGrouper.ts` optionally builds 2×2 contact sheets when there are 5+ images so a single Gemini request still has the right visual context.
+- **Text-only PDF fallback** – The Settings panel exposes a "Text-only (Gemini alt text)" toggle that skips uploading images to Gemini. `processPdf` injects `[IMAGE_N]` markers into the text stream, Gemini fills in descriptive alt text, and the client still embeds the extracted binaries when you copy/download the Markdown.
+- **Adaptive chunking for long documents** – `contentChunker.ts` splits very long text streams and groups inline images into the fewest possible Gemini API calls while staying within each model’s input-token limit. A secondary byte budget keeps the base64 inline images under ~3 MB per request, so PDFs full of screenshots no longer exceed Gemini’s payload cap.
+- **Exact token accounting** – before streaming, `fileProcessor.ts` calls Gemini’s `countTokens` endpoint for each chunk. If the measured payload still exceeds the model’s limit, the chunk is split again automatically until it fits, and the progress modal shows the exact token count for every Gemini call.
+- **Rate-limit aware streaming** – `generateMarkdownStream` listens for Gemini’s `RetryInfo` payloads when you hit the per-minute quota, automatically waits the requested number of seconds (up to three retries), and echoes the delay inside the progress modal so large jobs resume without manual intervention.
+- **Progressive UX** – `ProgressModal`, `SettingsPanel`, `Dropzone`, and `ResultsView` work together to show upload state, conversion progress, and a markdown editor + preview with copy/download buttons. The processor now marks jobs as "completed" so the modal reaches a success state before handing off to the results screen.
+- **Optional support widget** – the Ko-fi floating chat launcher in `index.html` offers an unobtrusive way for users to leave a tip without blocking downloads or editing.
+- **Reset-friendly dropzone** – the drag-and-drop card now exposes an explicit "Clear File" action and clears the hidden `<input>` whenever you replace a file, so re-uploading the same PDF/HTML works without a refresh.
+- **Flexible image-handling toggles** – PDFs can either upload processed images or stay text-only, while HTML files can freely switch between ignoring images, asking Gemini for descriptions, or keeping the original links intact.
 
----
+## Conversion workflow
 
-## How It Works
+### PDFs
+1. **Read & parse** – `processPdf` loads the file into `pdf.js`, iterates every page, and accumulates text runs plus `ExtractedImage` objects. When the PDF Image Strategy is set to "Text-only", this step also injects `[IMAGE_N]` markers at the end of the page so Gemini knows where to keep each figure.
+2. **Image grouping (optional)** – if the strategy is "Upload processed images", `groupImages` may build contact sheets so the Gemini request stays compact. Text-only mode skips this entire step because nothing needs to be sent inline.
+3. **Gemini call** – the PDF text (plus grouped images when enabled) is split into token-aware chunks before streaming through `generateMarkdownStream`. In text-only mode, Gemini uses the `[IMAGE_N]` markers to generate alt text while the client keeps the binary payload local. The chunk-aware system prompt keeps numbering and structure consistent even if multiple API calls are required.
+4. **Assembly** – placeholders are replaced either with base64 data URIs (standalone `.md`) or relative `./assets/...` paths (for the `.zip`).
 
-The application's logic is tailored to the specific file type being processed, ensuring the best possible output.
+### HTML
+1. **Read** – the file is loaded as UTF-8 text, split into manageable parts, and chunked if necessary before `generateMarkdownStream` applies the HTML-specific system prompt (image preservation/description rules respect the UI setting).
+2. **Assemble** – the returned markdown is displayed in the editor/preview split-view, ready for copy or download.
 
-### PDF Processing Workflow
+## Architecture
 
-1.  **Client-Side Parsing**: The PDF file is loaded and parsed entirely in the browser using `pdf.js`.
-2.  **Content Extraction**: The app iterates through every page to extract two key components:
-    -   **Text**: All text content is concatenated into a single stream.
-    -   **Images**: Embedded images are programmatically extracted from the PDF's operator list. They are filtered, resized, and re-encoded based on the user's settings.
-3.  **Image Grouping (for large documents)**: To optimize the API call and provide better context, if a PDF contains numerous images (5 or more), they are automatically grouped into "contact sheets"—single JPEG images containing up to 4 of the original images with labels (e.g., `image_1`, `image_2`).
-4.  **Single API Call**: The entire text content and all extracted images (or contact sheets) are sent to the Gemini API in a single, comprehensive request.
-5.  **AI-Powered Reconstruction**: A carefully engineered system prompt instructs the Gemini model to reconstruct the document logically, placing special placeholders (`[IMAGE_1]`, `[IMAGE_2]`, etc.) where the corresponding images should appear in the text.
-6.  **Final Assembly**: The returned Markdown is post-processed. The `[IMAGE_N]` placeholders are replaced with either base64-encoded image data (for standalone files) or relative links to the `assets` folder (for the `.zip` archive).
+```
+md_converter/
+├── App.tsx              # Main UI state machine (file selection → progress → results)
+├── components/          # Dropzone, SettingsPanel, ProgressModal, modals, etc.
+├── hooks/useLocalStorage.ts
+├── services/
+│   ├── fileProcessor.ts     # Chooses PDF vs HTML pipeline and orchestrates Gemini calls
+│   ├── geminiService.ts     # Wraps @google/genai streaming + model discovery
+│   ├── contentChunker.ts    # Splits long text + image payloads into model-sized chunks
+│   ├── promptBuilder.ts     # Builds the system prompt Gemini uses for Markdown conversion (chunk-aware)
+│   ├── imageProcessor.ts    # Pulls embedded PDF images via pdf.js
+│   ├── imageGrouper.ts      # Builds contact sheets for many images
+├── assets/              # Static imagery for the landing UI
+├── index.tsx            # React entry point
+├── index.html           # Vite mount point
+├── package.json         # Scripts + dependencies
+└── vite.config.ts       # Vite + env injection for GEMINI_API_KEY
+```
 
-### HTML Processing Workflow
+> The folder tree above reflects the working implementation (no `src/` nesting yet), which differs from the aspirational plan that used `src/components`, `context/`, etc.
 
-1.  **Text Extraction**: The HTML file is read as plain text.
-2.  **API Conversion**: The raw HTML content is sent to the Gemini API.
-3.  **Targeted System Prompt**: The system prompt for HTML instructs the model on how to handle specific tags, such as converting `<table>` to Markdown tables and managing `<img>` tags based on the user's "Image Handling" setting (preserving links, describing, or ignoring).
-4.  **Clean Markdown Output**: The model returns a clean, well-formatted Markdown document. Since HTML images are typically remote URLs, no local image processing is needed.
+## Development
 
----
+1. **Install dependencies**
+   ```bash
+   npm install
+   ```
+2. **Run the dev server**
+   ```bash
+   npm run dev
+   ```
+   Vite listens on http://localhost:3000 per `vite.config.ts`.
+3. **Build for production**
+   ```bash
+   npm run build
+   ```
+4. **Preview the build**
+   ```bash
+   npm run preview
+   ```
 
-## Technology Stack
-
--   **Frontend**: React, TypeScript, Tailwind CSS
--   **Core Logic**:
-    -   **`@google/genai`**: For all interactions with the Gemini API.
-    -   **`pdf.js`**: For client-side PDF parsing and image extraction.
-    -   **`jszip`**: For creating `.zip` archives directly in the browser.
--   **UI & Rendering**:
-    -   **`react-markdown`**: For rendering the live Markdown preview.
-    -   **`remark-gfm`**: A plugin for `react-markdown` to support GitHub Flavored Markdown (tables, strikethrough, etc.).
-
-### Gemini API integration (model + key switching)
-
--   **New switched SDK**: The app depends on `@google/genai` (see `package.json`), which is Google's new "switched" Gemini SDK. The SDK already defaults to the updated Gemini Developer API surface, so we automatically benefit from the new endpoints without any additional routing logic.
--   **Runtime model discovery**: `services/geminiService.ts` exposes `getAvailableModels`, which calls `https://generativelanguage.googleapis.com/v1beta/models` with the active API key. The response is filtered down to text-capable models and drives the "AI Model" dropdown in `SettingsPanel`. Because the UI only renders the SDK-supported options, switching between Gemini models always uses the supported, switched API names.
--   **Per-request key switching**: Every invocation of `generateMarkdownStream` (and `generateImageDescription`) instantiates `GoogleGenAI` with the API key currently stored in local storage. When the user presses "Switch API Key" in the header, `App.tsx` updates that stored key, triggering a refetch of the model list. Subsequent conversions therefore use the new key automatically without any stale client instances.
--   **Streaming on the new API**: The conversion layer uses `ai.models.generateContentStream` to talk to the Gemini API. This call is only available in the new SDK, so successful streaming responses are a direct verification that we are exercising the switched API surface.
-
----
-
-## Local Development Setup
-
-This project is a standard Vite + React application. You will work with a familiar Node.js toolchain (`npm install`, `npm run dev`, `npm run build`, etc.) just like any other modern frontend project.
-
-### Prerequisites
-
--   [Node.js](https://nodejs.org/) 18 or newer (ships with a compatible version of `npm`).
--   A package manager (`npm` is assumed in the commands below).
--   A Gemini API key (see the **Environment variables** section).
-
-### Installation & Running
-
-1.  **Get the code**: Clone the repository or download and extract the source code files to a local directory.
-
-    ```bash
-    git clone <repository-url>
-    cd <repository-directory>
-    ```
-
-2.  **Install Dependencies**: Run the following to install required packages:
-    ```bash
-    npm install
-    ```
-
-   Note: While some dependencies are loaded from CDNs, the project uses Vite for building and development, so installation is required.
-
-3.  **Start the Development Server** (Recommended for Development):
-    Use Vite's built-in server for hot module replacement and proper TypeScript handling:
-    ```bash
-    npm run dev
-    ```
-
-   This starts the app at http://localhost:5173 (or similar).
-
-   **For Production/Static Serving**:
-   - Build the app first:
-     ```bash
-     npm run build
-     ```
-   - Then serve the `dist/` folder with a static server, e.g.:
-     ```bash
-     npx serve dist
-     ```
-
-   Alternative static servers (for built app only):
-   - **Python 3**: `python3 -m http.server` (in the `dist/` folder).
-   - **VS Code Live Server**: Open the `dist/` folder and use the extension.
-
-4.  **Open the App**: Once the server is running, open the web browser and navigate to the local address it provides (usually `http://localhost:8000`, `http://localhost:3000`, or `http://127.0.0.1:5500`).
-
-5.  **Enter API Key**: The application will prompt you to enter the Gemini API Key on the first launch. This key is stored in the browser's local storage and is not exposed anywhere else.
-
-**Create a production build**: When you're ready to test the optimized bundle, run:
-
-    ```bash
-    npm run build
-    ```
 ### Environment variables
+- `GEMINI_API_KEY` – optional but recommended. Define it in a `.env` file so Vite exposes it as `process.env.GEMINI_API_KEY`. Otherwise, the UI will prompt the user on first launch.
 
--   `GEMINI_API_KEY` – optional, but recommended. Creating a `.env` file at the project root (or exporting the variable in the shell) lets Vite embed a default Gemini API key at build time. If this variable is absent, the UI will prompt you to paste the key manually before you can run a conversion.
+### Scripts & tooling
+- `npm run lint` / `pnpm lint` – type-check the project via `tsc --noEmit`.
+- `npm test` / `pnpm test` – currently runs the same type-check pass. Extend this script with Vitest once you add runtime tests.
 
-    ```bash
-    echo "GEMINI_API_KEY=ask-the-key" >> .env
-    ```
+## Prompt customization
 
----
+Fine-tune how Gemini restructures documents by editing `services/promptBuilder.ts`. The helper centralizes the shared rules (headers, citations, math handling) and exposes separate code paths for PDFs and HTML sources. Updating the prompt builder immediately affects every conversion request without touching the streaming service code.
 
-## Project Structure
+## Handling model limits & troubleshooting
+- **Automatic chunking** – When the estimated token count of the extracted text + inline images would exceed the selected model’s input limit, `contentChunker.ts` splits the payload into as few API calls as possible (usually only one). After that first pass, the processor calls Gemini’s `countTokens` API for every chunk and will recursively split any payload that still exceeds the true budget. If a model never reports its limit, the helper falls back to a conservative ceiling so the request is still pre-split before hitting Gemini’s hard cap. The progress modal now displays the exact token usage for each chunk (plus the verified total) so you can see how much quota every call consumes.
+- **Quota retries** – Gemini returns `RESOURCE_EXHAUSTED` (HTTP 429) when you exhaust your per-minute token budget. Instead of failing immediately, the streaming helper reads the `RetryInfo.retryDelay` field (or the “Please retry in Ns” hint), updates the progress modal with the pause duration, waits automatically, and retries the chunk up to three times before surfacing an error.
+- **Oversized images** – Each inline image is budgeted twice: by a token estimate and by an approximate byte size. If a single grouped image is still too large for the model, the processor surfaces an explicit error so you can reduce the max dimension/quality in the Advanced Image Settings before retrying.
+- **Need to stay under quota?** – Switch the PDF Image Strategy to "Text-only (Gemini alt text)" so the conversion only sends text to Gemini. You still get embedded images in the downloaded Markdown, but the request avoids the heavy inline base64 payload and relies on the generated alt text instead.
+- **Missing models?** Ensure the API key has access to Gemini text-capable models. Errors from `getAvailableModels` bubble up to the Settings panel for quick debugging.
+- **PDF images look off?** Tweak the advanced image settings (format, quality, min/max dimensions) or disable grouping by keeping the total count below 5 images.
 
-The codebase is planned (not yet) to logically separate concerns between UI, core services, and type definitions.
 
+### Inspecting model token limits
+
+Google’s Python SDK exposes the exact `input_token_limit` and `output_token_limit` for every model tied to your key. Run the snippet below (replace the API key with your own) to confirm the ceilings that the UI enforces while chunking:
+
+```python
+import google.generativeai as genai
+
+genai.configure(api_key="<YOUR_KEY>")
+
+print("--- Available Models and Input Limits ---")
+for model in genai.list_models():
+    if 'generateContent' in model.supported_generation_methods:
+        print(f"Model: {model.display_name}")
+        print(f"  Name: {model.name}")
+        print(f"  Input Limit: {model.input_token_limit:,} tokens")
+        print(f"  Output Limit: {model.output_token_limit:,} tokens")
+        print("-" * 20)
+
+print("\n--- Details for a Specific Model ---")
+model_name = 'models/gemini-1.5-pro-latest'
+model_info = genai.get_model(model_name)
+print(f"Model: {model_info.display_name}")
+print(f"  Input Limit: {model_info.input_token_limit:,} tokens")
+print(f"  Output Limit: {model_info.output_token_limit:,} tokens")
 ```
-project/
-│
-├── .gitignore          # Ignores /dist, /node_modules, .env.local
-├── README.md           # main project README.
-├── agents.md           # README for agents: a dedicated, predictable place to provide the context and instructions to help AI coding agents work on project.
-│
-├── index.html            # <-- The root HTML page. This is hosted on the static host (Vercel, Netlify, GitHub Pages).
-├── package.json          # <-- Defines all the dependencies (React, Vite, Tailwind, vite-plugin-pwa). No 'Express', 'Stripe', or 'Resend'.
-├── vite.config.ts        # <-- Configures Vite, Tailwind, and the PWA plugin.
-├── tsconfig.json         # <-- TypeScript config for the app.
-│
-├── .env.local            # Holds the *public* keys, e.g., VITE_GUMROAD_LINK="https://...".
-│
-├── public/               # <-- Static assets for the PWA.
-│   ├── manifest.webmanifest  # The PWA manifest file.
-│   └── icon-512.png          # the PWA app icon.
-│
-└── src/                    # <-- the entire application lives here.
-    │
-    ├── components/         # "Dumb" UI components (Button.tsx, Modal.tsx, etc.).
-    │   ├── ui/
-    │   ├── layout/
-    │   └── conversion/
-    │
-    ├── hooks/              # React-specific "business logic".
-    │   ├── useProStatus.ts     # <-- CRITICAL: This is the monetization logic. It checks localStorage for a key and has a 'validateAndSaveKey' function.
-    │   ├── useLocalStorage.ts  # Reusable hook to save user settings.
-    │   └── useFileConverter.ts # Manages all conversion state (file, loading, error, output).
-    │
-    ├── services/           # pure" business logic (no React hooks).
-    │   ├── test/            # <-- Test utilities (e.g., mockGeminiService, fileprocessor).
-    │   ├── geminiService.ts    # Makes the fetch call directly to the Gemini API from the browser.
-    │   ├── fileProcessor.ts  # Main orchestrator for file processing
-    │   ├── imageGrouper.ts   # Logic for creating contact sheets
-    │   └── imageProcessor.ts # Extracts and processes images from PDFs
-    │   └── ...
-    │
-    ├── context/            # Global state (e.g., AppSettingsContext).
-    │   └── ...
-    │
-    ├── pages/              # "Smart" components that assemble the app's pages.
-    │   ├── ConversionPage.tsx  # Uses 'useFileConverter' and 'useProStatus' to build the main UI.
-    │   └── AboutPage.tsx
-    │
-    ├── types/              # <-- All app's types 
-    │   └── index.ts        # e.g., 'LicenseInfo', 'UserSettings', 'FileProcessingOptions'.
-    │
-    ├── App.tsx             # Sets up the main 'react-router-dom' routes.
-    ├── main.tsx            # App entry point. Mounts React into 'index.html'.
-    └── index.css           # Global CSS and Tailwind imports.
+
+Comparing those numbers with the progress modal’s token readouts tells you how close a conversion came to the quota and whether you should switch models or pause between jobs.
+
+### Counting tokens for a sample prompt
+
+The same SDK exposes a `count_tokens` helper so you can predict how a standalone prompt will be billed before sending it. This mirrors the verification step the app now performs for every chunk:
+
+```python
+import google.generativeai as genai
+
+genai.configure(api_key="<YOUR_KEY>")
+model = genai.GenerativeModel("gemini-1.5-flash")
+
+prompt = "Explain quantum physics to a 5 year old."
+
+response = model.count_tokens(prompt)
+print(f"Total Tokens: {response.total_tokens}")
+
+if response.total_tokens > 1_000:
+    print("Prompt is too long! Truncating...")
+else:
+    print("Sending request...")
 ```
+
+Inside the browser, `fileProcessor.ts` follows the same pattern: it gathers the PDF/HTML content, asks Gemini for the exact token count, and only streams the chunk once it knows the payload fits within the model’s limit.
+
+
+With this context, you can confidently evolve the repo without relying on the aspirational structure that was described in the previous README.

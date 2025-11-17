@@ -1,9 +1,10 @@
 
 import type { Dispatch, SetStateAction } from 'react';
-import { ConversionSettings, ProgressState, ConversionResult, ProgressStep, ExtractedImage } from '../types';
-import { generateMarkdownStream } from './geminiService';
+import { ConversionSettings, ProgressState, ConversionResult, ProgressStep, ExtractedImage, GeminiContentPart } from '../types';
+import { generateMarkdownStream, countTokensForParts } from './geminiService';
 import { extractAndProcessImagesFromPage } from './imageProcessor';
 import { groupImages } from './imageGrouper';
+import { chunkContentParts, splitTextIntoParts } from './contentChunker';
 
 declare var JSZip: any;
 declare var pdfjsLib: any;
@@ -44,25 +45,76 @@ const getFriendlyErrorMessage = (error: unknown): string => {
     return error.message;
 };
 
-const getLicenseHeader = (): string => {
-    return `[![Buy Me A Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=&slug=your-username&button_colour=FFDD00&font_colour=000000&font_family=Poppins&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/your-username)\n\n---\n\n`;
-};
+interface SafeChunkResult {
+    chunks: GeminiContentPart[][];
+    tokenCounts: number[];
+    totalTokens: number;
+}
 
+const ensureChunksWithinTokenLimit = async (
+    initialChunks: GeminiContentPart[][],
+    settings: ConversionSettings,
+    fileType: 'pdf' | 'html',
+    apiKey: string,
+    chunkTokenLimit: number
+): Promise<SafeChunkResult> => {
+    const safeChunks: GeminiContentPart[][] = [];
+    const tokenCounts: number[] = [];
+
+    const splitChunkRecursively = async (parts: GeminiContentPart[]): Promise<void> => {
+        if (!parts.length) {
+            return;
+        }
+
+        const tokenCount = await countTokensForParts(parts, settings, fileType, apiKey);
+
+        if (tokenCount <= chunkTokenLimit) {
+            safeChunks.push(parts);
+            tokenCounts.push(tokenCount);
+            return;
+        }
+
+        if (parts.length === 1) {
+            const [singlePart] = parts;
+            if (singlePart?.text) {
+                const smallerParts = splitTextIntoParts(singlePart.text);
+                if (!smallerParts.length) {
+                    throw new Error('Unable to split an oversized text block to meet the model token limit.');
+                }
+                await splitChunkRecursively(smallerParts);
+                return;
+            }
+
+            throw new Error('A single image or binary block exceeds the model token limit. Reduce the max image size or switch to alt-text mode.');
+        }
+
+        const midpoint = Math.ceil(parts.length / 2);
+        await splitChunkRecursively(parts.slice(0, midpoint));
+        await splitChunkRecursively(parts.slice(midpoint));
+    };
+
+    for (const chunkParts of initialChunks) {
+        await splitChunkRecursively(chunkParts);
+    }
+
+    const totalTokens = tokenCounts.reduce((sum, value) => sum + value, 0);
+    return { chunks: safeChunks, tokenCounts, totalTokens };
+};
 
 export const processFile = async (
     file: File,
     settings: ConversionSettings,
     setProgress: Dispatch<SetStateAction<ProgressState>>,
     apiKey: string,
-    isLicensed: boolean
+    modelTokenLimit?: number
 ): Promise<ConversionResult> => {
-    
+
     const isPdf = file.type === 'application/pdf';
 
     if (isPdf) {
-        return processPdf(file, settings, setProgress, apiKey, isLicensed);
+        return processPdf(file, settings, setProgress, apiKey, modelTokenLimit);
     } else if (file.type === 'text/html') {
-        return processHtml(file, settings, setProgress, apiKey, isLicensed);
+        return processHtml(file, settings, setProgress, apiKey, modelTokenLimit);
     } else {
         throw new Error(`Unsupported file type: ${file.type}`);
     }
@@ -73,12 +125,13 @@ const processPdf = async (
     settings: ConversionSettings,
     setProgress: Dispatch<SetStateAction<ProgressState>>,
     apiKey: string,
-    isLicensed: boolean
+    modelTokenLimit?: number
 ): Promise<ConversionResult> => {
+    const sendImagesToGemini = settings.pdfImageMode !== 'alt-text';
     const steps: ProgressStep[] = [
         { name: `Reading file: ${file.name}`, status: 'pending' },
         { name: 'Extracting all text & images', status: 'pending' },
-        { name: 'Grouping images for processing', status: 'pending' },
+        { name: sendImagesToGemini ? 'Grouping images for processing' : 'Skipping Gemini image upload', status: 'pending' },
         { name: 'Generating Markdown from content', status: 'pending' },
         { name: 'Assembling final files', status: 'pending' },
     ];
@@ -112,10 +165,20 @@ const processPdf = async (
             updateStep(1, 'in-progress', `Processing page ${i}/${numPages}...`);
             const page = await pdf.getPage(i);
             const textContent = await page.getTextContent();
-            allText += textContent.items.map((item: any) => item.str).join(' ') + '\n\n';
-            
+            let pageText = textContent.items.map((item: any) => item.str).join(' ') + '\n\n';
+
             const pageImages = await extractAndProcessImagesFromPage(page, settings);
+            const startIndex = allExtractedImages.length;
             allExtractedImages.push(...pageImages);
+
+            if (!sendImagesToGemini && pageImages.length) {
+                const placeholderLines = pageImages
+                    .map((_, idx) => `[IMAGE_${startIndex + idx + 1}]`)
+                    .join('\n');
+                pageText += `${placeholderLines}\n\n`;
+            }
+
+            allText += pageText;
             page.cleanup();
         }
         updateStep(1, 'completed', `Extracted text and ${allExtractedImages.length} images from ${numPages} pages.`);
@@ -128,21 +191,82 @@ const processPdf = async (
     
     // Step 2: Group images
     updateStep(2, 'in-progress');
-    const apiImages = await groupImages(allExtractedImages);
-    updateStep(2, 'completed', `Processed ${apiImages.length} final images for API.`);
+    const apiImages = sendImagesToGemini ? await groupImages(allExtractedImages) : [];
+    updateStep(2, 'completed', sendImagesToGemini
+        ? `Processed ${apiImages.length} final images for API.`
+        : 'Skipped image upload so Gemini only receives PDF text.');
 
     // Step 3: Generate Markdown
     const generatingStepIndex = 3;
-    updateStep(generatingStepIndex, 'in-progress', 'Sending all content to Gemini...');
+    updateStep(generatingStepIndex, 'in-progress', 'Preparing content for Gemini...');
     let fullMarkdown = "";
-    
-    try {
-        const parts: any[] = [{ text: allText }];
-        apiImages.forEach(img => { parts.push({ inlineData: { mimeType: `image/${img.format}`, data: img.b64 } }); });
 
-        fullMarkdown = await generateMarkdownStream(parts, settings, 'pdf', () => {
-            updateStep(generatingStepIndex, 'in-progress', 'Receiving Markdown stream...');
-        }, apiKey);
+    try {
+        const textParts = splitTextIntoParts(allText);
+        const parts: GeminiContentPart[] = sendImagesToGemini
+            ? [
+                ...textParts,
+                ...apiImages.map(img => ({ inlineData: { mimeType: `image/${img.format}`, data: img.b64 } }))
+            ]
+            : textParts;
+
+        const { chunks: estimatedChunks, chunkTokenLimit } = chunkContentParts(parts, modelTokenLimit);
+
+        if (!estimatedChunks.length) {
+            throw new Error('No content was extracted from the PDF.');
+        }
+
+        updateStep(generatingStepIndex, 'in-progress', 'Requesting exact token counts from Gemini...');
+
+        const { chunks, tokenCounts, totalTokens } = await ensureChunksWithinTokenLimit(
+            estimatedChunks,
+            settings,
+            'pdf',
+            apiKey,
+            chunkTokenLimit
+        );
+
+        const chunkCountLabel = chunks.length === 1
+            ? 'Prepared 1 chunk after verification.'
+            : `Prepared ${chunks.length} chunks after verification.`;
+        const tokenSummaryLabel = `Gemini counted ${totalTokens.toLocaleString()} tokens total (limit ${chunkTokenLimit.toLocaleString()} per chunk).`;
+        const chunkEstimatesPreview = tokenCounts
+            .slice(0, 4)
+            .map((tokens, index) => `Chunk ${index + 1}: ${tokens.toLocaleString()} tokens`)
+            .join(' | ');
+        const chunkEstimateSuffix = tokenCounts.length > 4
+            ? ` | +${tokenCounts.length - 4} more chunk(s)`
+            : '';
+        const chunkSummaryMessage = [chunkCountLabel, tokenSummaryLabel, chunkEstimatesPreview + chunkEstimateSuffix]
+            .filter(Boolean)
+            .join(' ');
+        updateStep(generatingStepIndex, 'in-progress', chunkSummaryMessage.trim());
+
+        const handleStatusUpdate = (message: string) => {
+            updateStep(generatingStepIndex, 'in-progress', message);
+        };
+
+        for (let i = 0; i < chunks.length; i++) {
+            const chunkParts = chunks[i];
+            const chunkContext = chunks.length > 1 ? { index: i, total: chunks.length } : undefined;
+            const verifiedChunkTokens = tokenCounts[i];
+            const sendingMessageBase = chunks.length > 1
+                ? `Sending chunk ${i + 1}/${chunks.length} to Gemini`
+                : 'Sending all content to Gemini';
+            const sendingMessage = verifiedChunkTokens
+                ? `${sendingMessageBase} (${verifiedChunkTokens.toLocaleString()} tokens)...`
+                : `${sendingMessageBase}...`;
+            updateStep(generatingStepIndex, 'in-progress', sendingMessage);
+
+            const chunkMarkdown = await generateMarkdownStream(chunkParts, settings, 'pdf', () => {
+                const receivingMessage = chunks.length > 1
+                    ? `Receiving chunk ${i + 1}/${chunks.length}...`
+                    : 'Receiving Markdown stream...';
+                updateStep(generatingStepIndex, 'in-progress', receivingMessage);
+            }, apiKey, chunkContext, handleStatusUpdate);
+
+            fullMarkdown += (fullMarkdown ? '\n\n' : '') + chunkMarkdown.trim();
+        }
 
         updateStep(generatingStepIndex, 'completed');
     } catch (error) {
@@ -156,38 +280,59 @@ const processPdf = async (
     const assemblingStepIndex = 4;
     updateStep(assemblingStepIndex, 'in-progress');
 
-    const header = isLicensed ? '' : getLicenseHeader();
+    const replaceImageTokens = (
+        markdown: string,
+        createTag: (image: ExtractedImage, index: number, altText?: string) => string,
+    ): string => {
+        const replaceWithAlt = (match: string, alt: string, nStr: string) => {
+            const index = parseInt(nStr, 10) - 1;
+            if (index >= 0 && index < allExtractedImages.length) {
+                const altText = alt?.trim() || `Extracted Image ${index + 1}`;
+                return createTag(allExtractedImages[index], index, altText);
+            }
+            return match;
+        };
+
+        const replaceWithoutAlt = (match: string, nStr: string) => {
+            const index = parseInt(nStr, 10) - 1;
+            if (index >= 0 && index < allExtractedImages.length) {
+                return createTag(allExtractedImages[index], index);
+            }
+            return match;
+        };
+
+        return markdown
+            .replace(/!\[([^\]]*?)\]\[IMAGE_(\d+)\]/g, replaceWithAlt)
+            .replace(/\[IMAGE_(\d+)\]/g, replaceWithoutAlt);
+    };
 
     // Version 1: Standalone Markdown with embedded images
-    const standaloneMdContent = header + fullMarkdown.replace(/\[IMAGE_(\d+)\]/g, (_, nStr) => {
-        const index = parseInt(nStr, 10) - 1;
-        if (index >= 0 && index < allExtractedImages.length) {
-            const img = allExtractedImages[index];
-            return `![Extracted Image ${index + 1}](data:image/${img.format};base64,${img.b64})`;
-        }
-        return `[IMAGE_${nStr}]`;
+    const standaloneMdContent = replaceImageTokens(fullMarkdown, (img, index, altText) => {
+        const safeAlt = altText || `Extracted Image ${index + 1}`;
+        return `![${safeAlt}](data:image/${img.format};base64,${img.b64})`;
     });
 
     // Version 2: Create zip archive
     const zip = new JSZip();
     const assets = zip.folder("assets");
     if (!assets) throw new Error("Could not create zip folder.");
-    
-    const markdownForZip = header + fullMarkdown.replace(/\[IMAGE_(\d+)\]/g, (_, nStr) => {
-        const index = parseInt(nStr, 10) - 1;
-        if (index >= 0 && index < allExtractedImages.length) {
-            const img = allExtractedImages[index];
-            const imageName = `${baseFileName}_image_${index + 1}.${img.format}`;
+    const addedToZip = new Set<number>();
+
+    const markdownForZip = replaceImageTokens(fullMarkdown, (img, index, altText) => {
+        const imageName = `${baseFileName}_image_${index + 1}.${img.format}`;
+        if (!addedToZip.has(index)) {
             assets.file(imageName, img.b64, { base64: true });
-            return `![Extracted Image ${index + 1}](./assets/${encodeURIComponent(imageName)})`;
+            addedToZip.add(index);
         }
-        return `[IMAGE_${nStr}]`;
+        const safeAlt = altText || `Extracted Image ${index + 1}`;
+        return `![${safeAlt}](./assets/${encodeURIComponent(imageName)})`;
     });
     zip.file(`${baseFileName}.md`, markdownForZip);
     const zipBlob = await zip.generateAsync({ type: "blob" });
     
     updateStep(assemblingStepIndex, 'completed');
-    return { 
+    setProgress(prev => ({ ...prev, overallStatus: 'completed' }));
+    return {
         markdownForPreview: standaloneMdContent,
         standaloneMdContent: standaloneMdContent,
         zipBlob: zipBlob,
@@ -200,7 +345,7 @@ const processHtml = async (
     settings: ConversionSettings,
     setProgress: Dispatch<SetStateAction<ProgressState>>,
     apiKey: string,
-    isLicensed: boolean
+    modelTokenLimit?: number
 ): Promise<ConversionResult> => {
      const steps: ProgressStep[] = [
         { name: `Reading file: ${file.name}`, status: 'pending' },
@@ -225,9 +370,64 @@ const processHtml = async (
     updateStep(1, 'in-progress');
     let markdown = "";
     try {
-        markdown = await generateMarkdownStream([{ text: htmlText }], settings, 'html', () => {
-            updateStep(1, 'in-progress', `Streaming text...`);
-        }, apiKey);
+        const textParts = splitTextIntoParts(htmlText);
+        const { chunks: estimatedChunks, chunkTokenLimit } = chunkContentParts(textParts, modelTokenLimit);
+
+        if (!estimatedChunks.length) {
+            throw new Error('No HTML content was provided.');
+        }
+
+        updateStep(1, 'in-progress', 'Requesting exact token counts from Gemini...');
+
+        const { chunks, tokenCounts, totalTokens } = await ensureChunksWithinTokenLimit(
+            estimatedChunks,
+            settings,
+            'html',
+            apiKey,
+            chunkTokenLimit
+        );
+
+        const chunkCountLabel = chunks.length === 1
+            ? 'Prepared 1 chunk after verification.'
+            : `Prepared ${chunks.length} chunks after verification.`;
+        const tokenSummaryLabel = `Gemini counted ${totalTokens.toLocaleString()} tokens total (limit ${chunkTokenLimit.toLocaleString()} per chunk).`;
+        const chunkEstimatesPreview = tokenCounts
+            .slice(0, 4)
+            .map((tokens, index) => `Chunk ${index + 1}: ${tokens.toLocaleString()} tokens`)
+            .join(' | ');
+        const chunkEstimateSuffix = tokenCounts.length > 4
+            ? ` | +${tokenCounts.length - 4} more chunk(s)`
+            : '';
+        const chunkSummaryMessage = [chunkCountLabel, tokenSummaryLabel, chunkEstimatesPreview + chunkEstimateSuffix]
+            .filter(Boolean)
+            .join(' ');
+        updateStep(1, 'in-progress', chunkSummaryMessage.trim());
+
+        const handleStatusUpdate = (message: string) => {
+            updateStep(1, 'in-progress', message);
+        };
+
+        for (let i = 0; i < chunks.length; i++) {
+            const chunkContext = chunks.length > 1 ? { index: i, total: chunks.length } : undefined;
+            const verifiedChunkTokens = tokenCounts[i];
+            const sendingMessageBase = chunks.length > 1
+                ? `Sending chunk ${i + 1}/${chunks.length}`
+                : 'Sending text to Gemini';
+            const sendingMessage = verifiedChunkTokens
+                ? `${sendingMessageBase} (${verifiedChunkTokens.toLocaleString()} tokens)...`
+                : `${sendingMessageBase}...`;
+            updateStep(1, 'in-progress', sendingMessage);
+
+            const chunkMarkdown = await generateMarkdownStream(chunks[i], settings, 'html', () => {
+                const receivingMessage = chunks.length > 1
+                    ? `Receiving chunk ${i + 1}/${chunks.length}...`
+                    : `Streaming text...`;
+                updateStep(1, 'in-progress', receivingMessage);
+            }, apiKey, chunkContext, handleStatusUpdate);
+
+            markdown += (markdown ? '\n\n' : '') + chunkMarkdown.trim();
+        }
+
         updateStep(1, 'completed');
     } catch (error) {
          const errorMessage = getFriendlyErrorMessage(error);
@@ -238,9 +438,9 @@ const processHtml = async (
     
     // Step 2: Assembling
     updateStep(2, 'in-progress');
-    const header = isLicensed ? '' : getLicenseHeader();
-    const finalMarkdown = header + markdown;
+    const finalMarkdown = markdown;
     updateStep(2, 'completed');
+    setProgress(prev => ({ ...prev, overallStatus: 'completed' }));
 
     return {
         markdownForPreview: finalMarkdown,

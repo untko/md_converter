@@ -115,30 +115,67 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, setSettings, on
                 </div>
                 
                 {/* Image Handling */}
-                <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">Image Handling</label>
-                    <div className="flex space-x-4">
-                        {['ignore', 'describe', 'preserve-links'].map((opt) => {
-                            const option = opt as ImageHandling;
-                            const disabled = isPdf || (option === 'preserve-links' && !isPdf);
-                            return (
-                               <label key={option} className={`flex items-center space-x-2 ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
-                                    <input
-                                        type="radio" name="imageHandling" value={option} checked={settings.imageHandling === option}
-                                        onChange={() => !disabled && handleSettingChange('imageHandling', option)}
-                                        disabled={disabled} className="form-radio text-purple-500 bg-gray-700 border-gray-600"
-                                    />
-                                    <span>{option.replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())} {option === 'preserve-links' ? '(HTML only)' : ''}</span>
-                                </label>
-                            )
-                        })}
-                    </div>
-                     {isPdf && (
+                {isPdf ? (
+                    <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-2">PDF Image Strategy</label>
+                        <div className="space-y-3">
+                            <label className="flex items-start space-x-3 cursor-pointer bg-white/5 p-3 rounded-md">
+                                <input
+                                    type="radio"
+                                    name="pdfImageMode"
+                                    value="inline"
+                                    checked={settings.pdfImageMode === 'inline'}
+                                    onChange={() => handleSettingChange('pdfImageMode', 'inline')}
+                                    className="mt-1 form-radio text-purple-500 bg-gray-700 border-gray-600"
+                                />
+                                <span>
+                                    <span className="block font-medium">Upload processed images</span>
+                                    <span className="text-xs text-gray-400">Sends grouped images to Gemini so it can place placeholders automatically. Use when you need the model to see every figure.</span>
+                                </span>
+                            </label>
+                            <label className="flex items-start space-x-3 cursor-pointer bg-white/5 p-3 rounded-md">
+                                <input
+                                    type="radio"
+                                    name="pdfImageMode"
+                                    value="alt-text"
+                                    checked={settings.pdfImageMode === 'alt-text'}
+                                    onChange={() => handleSettingChange('pdfImageMode', 'alt-text')}
+                                    className="mt-1 form-radio text-purple-500 bg-gray-700 border-gray-600"
+                                />
+                                <span>
+                                    <span className="block font-medium">Text-only (Gemini alt text)</span>
+                                    <span className="text-xs text-gray-400">Only PDF text is sent to Gemini. The processor inserts `[IMAGE_N]` markers and Gemini supplies descriptive alt text without uploading image binaries.</span>
+                                </span>
+                            </label>
+                        </div>
                         <p className="text-xs text-gray-400 mt-2">
-                            For PDFs, embedded images are automatically extracted and placed inline.
+                            Both modes still embed the extracted images in the downloaded Markdown/ZIP. Text-only mode simply avoids the inline image payload so long PDFs stay under the model limit.
                         </p>
-                    )}
-                </div>
+                    </div>
+                ) : (
+                    <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-2">Image Handling</label>
+                        <div className="flex space-x-4">
+                            {['ignore', 'describe', 'preserve-links'].map((opt) => {
+                                const option = opt as ImageHandling;
+                                const disabled = option === 'preserve-links' && isPdf;
+                                return (
+                                   <label key={option} className={`flex items-center space-x-2 ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
+                                        <input
+                                            type="radio" name="imageHandling" value={option} checked={settings.imageHandling === option}
+                                            onChange={() => !disabled && handleSettingChange('imageHandling', option)}
+                                            disabled={disabled} className="form-radio text-purple-500 bg-gray-700 border-gray-600"
+                                        />
+                                        <span>{option.replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())} {option === 'preserve-links' ? '(HTML only)' : ''}</span>
+                                    </label>
+                                )
+                            })}
+                        </div>
+                        <p className="text-xs text-gray-400 mt-2">
+                            HTML files can ignore images, ask Gemini to describe them, or preserve the original links in Markdown.
+                        </p>
+                    </div>
+                )}
             </fieldset>
 
             <fieldset className="border-t border-white/10 pt-6 space-y-4">
